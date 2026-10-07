@@ -15,6 +15,12 @@ data/local-assets.json
 # download caches, upstream tables, ledgers, reports, setup state
 .cache/
 
+# --- local mTLS secrets --------------------------------------------------------------------------
+# Never commit CA/private material or exported client identities.
+.mtls/
+*.p12
+*.pfx
+
 # --- Python (optional local-client extraction) ----------------------------------------------------
 .venv*/
 venv/
