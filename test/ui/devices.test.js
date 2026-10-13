@@ -1,12 +1,12 @@
 // Multi-device support and UI-polish units (no browser): ui/device.js (feature detection, <html> classes, zoom-gesture
-// blocking, long-press = detail, fullscreen), ui/compat.js polyfills, the HUD 🔍 buttons (hud.js checkButtons), the
+// blocking, long-press = detail, fullscreen, screen wake lock), ui/compat.js polyfills, the HUD 🔍 buttons (hud.js checkButtons), the
 // enemy preview pen helpers (gameLogic penPlacement / previewEnemyKey), the connection-banner class, the audio unlock on
 // iOS-like contexts, and the title's lone-surrogate scan (no regex lookbehind: a SyntaxError in Safari < 16.4).
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { installCompat } from '../../public/js/ui/compat.js';
-import { detectFeatures, featureClasses, fullscreen, installDeviceSupport, LONG_PRESS_MS, screenLandscape } from '../../public/js/ui/device.js';
+import { detectFeatures, featureClasses, fullscreen, installDeviceSupport, installScreenWakeLock, LONG_PRESS_MS, screenLandscape } from '../../public/js/ui/device.js';
 import { checkButtons } from '../../public/js/ui/hud.js';
 import { penPlacement, penZoneTiles, previewEnemyKey, PEN } from '../../public/js/ui/gameLogic.js';
 import { bannerVisible } from '../../public/js/ui/connBanner.js';
@@ -127,6 +127,114 @@ describe('ui/device.js feature detection', () => {
     const none = fakeWindow({ fs: false });
     assert.equal(fullscreen.supported(none.win), false);
     assert.equal(await fullscreen.enter(none.win), false);
+  });
+});
+
+describe('ui/device.js screen wake lock', () => {
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const sentinel = () => ({ releases: 0, async release() { this.releases++; } });
+  function wakeWindow(visibility = 'visible') {
+    const f = fakeWindow();
+    f.doc.visibilityState = visibility;
+    f.requests = [];
+    f.locks = [];
+    f.win.navigator.wakeLock = { async request(type) {
+      f.requests.push(type);
+      const lock = sentinel();
+      f.locks.push(lock);
+      return lock;
+    } };
+    f.visibility = (state) => { f.doc.visibilityState = state; f.doc.dispatch(new FakeEvent('visibilitychange')); };
+    return f;
+  }
+
+  test('unsupported browsers do nothing', () => {
+    const f = fakeWindow();
+    const dispose = installScreenWakeLock(f.win);
+    assert.equal(f.doc.count('visibilitychange'), 0);
+    assert.doesNotThrow(dispose);
+  });
+
+  test('requests a screen lock and releases it when the active lifetime ends', async () => {
+    const f = wakeWindow();
+    const dispose = installScreenWakeLock(f.win);
+    await flush();
+    assert.deepEqual(f.requests, ['screen']);
+    assert.equal(f.locks[0].releases, 0);
+    assert.equal(f.doc.count('visibilitychange'), 1);
+    dispose();
+    await flush();
+    assert.equal(f.locks[0].releases, 1);
+    assert.equal(f.doc.count('visibilitychange'), 0);
+    f.visibility('visible');
+    assert.deepEqual(f.requests, ['screen'], 'cleanup prevents foreground reacquisition');
+  });
+
+  test('waits while hidden and reacquires on returning to the foreground', async () => {
+    const f = wakeWindow('hidden');
+    const dispose = installScreenWakeLock(f.win);
+    assert.deepEqual(f.requests, []);
+    f.visibility('visible');
+    await flush();
+    assert.deepEqual(f.requests, ['screen']);
+    f.visibility('hidden');
+    await flush();
+    assert.equal(f.locks[0].releases, 1);
+    assert.deepEqual(f.requests, ['screen'], 'never requests while hidden');
+    f.visibility('visible');
+    await flush();
+    assert.deepEqual(f.requests, ['screen', 'screen']);
+    assert.equal(f.locks[1].releases, 0);
+    dispose();
+    await flush();
+    assert.equal(f.locks[1].releases, 1);
+  });
+
+  test('request and release rejections stay silent', async () => {
+    const f = wakeWindow();
+    f.win.navigator.wakeLock.request = async () => { throw new Error('denied'); };
+    const dispose = installScreenWakeLock(f.win);
+    await flush();
+    f.win.navigator.wakeLock.request = async () => ({ async release() { throw new Error('release denied'); } });
+    f.visibility('hidden');
+    f.visibility('visible');
+    await flush();
+    dispose();
+    await flush();
+    assert.equal(f.doc.count('visibilitychange'), 0);
+  });
+
+  test('a request that resolves after cleanup is released', async () => {
+    const f = wakeWindow();
+    let resolveRequest;
+    f.win.navigator.wakeLock.request = () => new Promise((resolve) => { resolveRequest = resolve; });
+    const dispose = installScreenWakeLock(f.win);
+    dispose();
+    const lock = sentinel();
+    resolveRequest(lock);
+    await flush();
+    assert.equal(lock.releases, 1);
+    assert.equal(f.doc.count('visibilitychange'), 0);
+  });
+
+  test('foreground reacquisition supersedes a pending request from before hiding', async () => {
+    const f = wakeWindow();
+    const pending = [];
+    f.win.navigator.wakeLock.request = () => new Promise((resolve) => pending.push(resolve));
+    const dispose = installScreenWakeLock(f.win);
+    f.visibility('hidden');
+    f.visibility('visible');
+    assert.equal(pending.length, 2);
+    const old = sentinel(), current = sentinel();
+    pending[1](current);
+    await flush();
+    pending[0](old);
+    await flush();
+    assert.equal(old.releases, 1);
+    assert.equal(current.releases, 0, 'a stale result does not replace the current lock');
+    dispose();
+    await flush();
+    assert.equal(current.releases, 1);
   });
 });
 
