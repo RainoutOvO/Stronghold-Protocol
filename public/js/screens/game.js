@@ -183,6 +183,7 @@ function MatchScreen() {
   const metricsSetting = useSettings().combatMetrics === true;
   // gameplay plugins (DESIGN §32.6): the HUD corner's MOD mark — re-rendered only when the room's content changes
   const modRoom = useStore((s) => (s.room?.content?.vanilla === false ? s.room : null), (a, b) => (a?.content ?? null) === (b?.content ?? null));
+  const screenWakeLock = useStore((s) => s.screenWakeLock, Object.is, settingsStore);
   // the room's spectator seats for the top bar's 观战席 capsule (ui/hud.js SpectatorPill; GitHub #120): room.state keeps coming
   // during the match, the list is replaced only when a seat changes — shallowEqual keeps an unrelated push from re-rendering
   const specFacts = useStore((s) => ({
@@ -245,7 +246,7 @@ function MatchScreen() {
   const phase = pub?.phase;
   const mode = phaseMode(phase);
   const combat = isCombatPhase(phase);
-  useScreenWakeLock(combat);
+  useScreenWakeLock(combat && screenWakeLock);
   const solo = roomSolo || String(pub?.modeId || '').includes('single');
   const players = sortedPlayers(pub);
   const meP = players.find((p) => p.playerId === myId) || null;

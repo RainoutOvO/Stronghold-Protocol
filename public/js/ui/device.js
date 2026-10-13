@@ -123,22 +123,39 @@ export function installScreenWakeLock(win = globalThis) {
   let sentinel = null;
   let generation = 0;
   const release = async (lock) => { try { await lock?.release(); } catch { /* best effort */ } };
-  const update = async () => {
-    const request = ++generation;
-    void release(sentinel);
-    sentinel = null;
-    if (doc.visibilityState !== 'visible') return;
+  const cancelRetry = () => {
+    doc.removeEventListener('pointerdown', onGesture, true);
+    doc.removeEventListener('touchstart', onGesture, true);
+  };
+  const onGesture = () => {
+    cancelRetry(); // a touch can also send a pointer event
+    if (doc.visibilityState === 'visible') void acquire(generation, false);
+  };
+  const acquire = async (request, retry = true) => {
     try {
       const lock = await wakeLock.request('screen');
       // A visibility change or cleanup can finish before the request.
       if (request !== generation || doc.visibilityState !== 'visible') void release(lock);
       else sentinel = lock;
-    } catch { /* unavailable or denied */ }
+    } catch {
+      if (retry && request === generation && doc.visibilityState === 'visible') {
+        doc.addEventListener('pointerdown', onGesture, true);
+        doc.addEventListener('touchstart', onGesture, { capture: true, passive: true });
+      }
+    }
+  };
+  const update = () => {
+    const request = ++generation;
+    cancelRetry();
+    void release(sentinel);
+    sentinel = null;
+    if (doc.visibilityState === 'visible') void acquire(request);
   };
   doc.addEventListener('visibilitychange', update);
   void update();
   return () => {
     ++generation;
+    cancelRetry();
     doc.removeEventListener('visibilitychange', update);
     void release(sentinel);
     sentinel = null;

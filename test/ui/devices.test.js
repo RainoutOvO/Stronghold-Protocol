@@ -204,6 +204,108 @@ describe('ui/device.js screen wake lock', () => {
     assert.equal(f.doc.count('visibilitychange'), 0);
   });
 
+  for (const gesture of ['pointerdown', 'touchstart']) {
+    test(`a rejected request retries once directly on ${gesture}`, async () => {
+      const f = wakeWindow();
+      const lock = sentinel();
+      f.win.navigator.wakeLock.request = (type) => {
+        f.requests.push(type);
+        return f.requests.length === 1 ? Promise.reject(new Error('needs a gesture')) : Promise.resolve(lock);
+      };
+      const dispose = installScreenWakeLock(f.win);
+      await flush();
+      assert.equal(f.doc.count('pointerdown'), 1);
+      assert.equal(f.doc.count('touchstart'), 1);
+      f.doc.dispatch(new FakeEvent(gesture));
+      assert.deepEqual(f.requests, ['screen', 'screen'], 'request starts within the event call stack');
+      f.doc.dispatch(new FakeEvent(gesture === 'pointerdown' ? 'touchstart' : 'pointerdown'));
+      await flush();
+      assert.equal(f.requests.length, 2, 'one touch cannot retry twice');
+      assert.equal(f.doc.count('pointerdown'), 0);
+      assert.equal(f.doc.count('touchstart'), 0);
+      assert.equal(lock.releases, 0);
+      dispose();
+      await flush();
+      assert.equal(lock.releases, 1);
+    });
+  }
+
+  test('a failed gesture retry stops; a new foreground request can retry once again', async () => {
+    const f = wakeWindow();
+    f.win.navigator.wakeLock.request = async (type) => { f.requests.push(type); throw new Error('denied'); };
+    const dispose = installScreenWakeLock(f.win);
+    await flush();
+    f.doc.dispatch(new FakeEvent('pointerdown'));
+    await flush();
+    assert.equal(f.requests.length, 2);
+    assert.equal(f.doc.count('pointerdown'), 0);
+    assert.equal(f.doc.count('touchstart'), 0);
+    f.doc.dispatch(new FakeEvent('touchstart'));
+    f.doc.dispatch(new FakeEvent('pointerdown'));
+    assert.equal(f.requests.length, 2, 'no retry loop');
+    f.visibility('hidden');
+    f.visibility('visible');
+    await flush();
+    assert.equal(f.requests.length, 3);
+    assert.equal(f.doc.count('pointerdown'), 1, 'the new normal request gets its own fallback');
+    f.doc.dispatch(new FakeEvent('touchstart'));
+    await flush();
+    assert.equal(f.requests.length, 4);
+    assert.equal(f.doc.count('touchstart'), 0);
+    dispose();
+  });
+
+  for (const end of ['cleanup', 'hidden']) {
+    test(`${end} cancels a pending gesture retry`, async () => {
+      const f = wakeWindow();
+      f.win.navigator.wakeLock.request = async (type) => { f.requests.push(type); throw new Error('denied'); };
+      const dispose = installScreenWakeLock(f.win);
+      await flush();
+      assert.equal(f.doc.count('pointerdown'), 1);
+      if (end === 'cleanup') dispose(); else f.visibility('hidden');
+      assert.equal(f.doc.count('pointerdown'), 0);
+      assert.equal(f.doc.count('touchstart'), 0);
+      f.doc.dispatch(new FakeEvent('pointerdown'));
+      f.doc.dispatch(new FakeEvent('touchstart'));
+      assert.equal(f.requests.length, 1);
+      dispose();
+    });
+
+    test(`a gesture retry resolving after ${end} releases its lock`, async () => {
+      const f = wakeWindow();
+      let resolveRetry;
+      f.win.navigator.wakeLock.request = (type) => {
+        f.requests.push(type);
+        return f.requests.length === 1 ? Promise.reject(new Error('needs a gesture'))
+          : new Promise((resolve) => { resolveRetry = resolve; });
+      };
+      const dispose = installScreenWakeLock(f.win);
+      await flush();
+      f.doc.dispatch(new FakeEvent('touchstart'));
+      if (end === 'cleanup') dispose(); else f.visibility('hidden');
+      const lock = sentinel();
+      resolveRetry(lock);
+      await flush();
+      assert.equal(lock.releases, 1);
+      assert.equal(f.doc.count('pointerdown'), 0);
+      assert.equal(f.doc.count('touchstart'), 0);
+      dispose();
+    });
+  }
+
+  test('a request rejected after hiding cannot arm a gesture retry', async () => {
+    const f = wakeWindow();
+    let rejectRequest;
+    f.win.navigator.wakeLock.request = () => new Promise((_, reject) => { rejectRequest = reject; });
+    const dispose = installScreenWakeLock(f.win);
+    f.visibility('hidden');
+    rejectRequest(new Error('hidden'));
+    await flush();
+    assert.equal(f.doc.count('pointerdown'), 0);
+    assert.equal(f.doc.count('touchstart'), 0);
+    dispose();
+  });
+
   test('a request that resolves after cleanup is released', async () => {
     const f = wakeWindow();
     let resolveRequest;
