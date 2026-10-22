@@ -13,8 +13,7 @@
 //     start, WebSocket wire and payload bytes) for a loopback or private-network client only — the maintainer's
 //     decision of 2026-10-12: the figures are the host's, so any other client, also one a tunnel or proxy on this
 //     machine forwards, gets the plain report (net.js clientAddress, honouring TRUST_PROXY like the WebSocket limits);
-//   * GET /asset-preload.json → the owner's source recommendation; GET /asset-preload/github.json → bounded public
-//     release metadata with an optional trusted visitor-country hint (assetRelease.js), both never cached by clients;
+//   * GET /asset-preload.json → the owner's source recommendation, never cached by clients;
 //   * everything else → the static files (static.js).
 // Every response's body bytes count in the traffic counters (traffic.js meter). A route that throws is logged and
 // answers 500.
@@ -23,7 +22,6 @@ import { PROTOCOL_VERSION, APP_VERSION } from '../../shared/constants.js';
 import { buildTag } from './buildTag.js';
 import { setSecurityHeaders, sendError, sendJson, splitUrl } from './common.js';
 import { clientAddress, isLocalIp } from '../net.js';
-import { getGithubRelease } from './assetRelease.js';
 
 const MAX_URL_LENGTH = 4096;
 
@@ -73,13 +71,6 @@ export function healthReport({ startedAt, network, registry, lobby, content = nu
 /** Does the query ask for the traffic counters (`traffic`, `traffic=1`, `traffic=true`)? */
 const wantsTraffic = (query) => /(?:^|&)traffic(?:=(?:1|true|yes))?(?:&|$)/i.test(query || '');
 
-/** Only an explicitly configured, trusted proxy header can provide country. No IP/locale/timezone guesses. */
-export function assetPreloadCountry(req, header, trustProxy = 'auto') {
-  if (!header || !(trustProxy === true || (trustProxy !== false && isLocalIp(req.socket?.remoteAddress)))) return null;
-  const value = req.headers?.[header];
-  return typeof value === 'string' && /^[A-Z]{2}$/.test(value) && value !== 'XX' ? value : null;
-}
-
 /**
  * The request listener for `http.createServer`.
  * @param {{ serveStatic: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse,
@@ -87,15 +78,13 @@ export function assetPreloadCountry(req, header, trustProxy = 'auto') {
  *           health: Parameters<typeof healthReport>[0], log: object, trustProxy?: 'auto' | boolean,
  *           csp?: string | null,
  *           assetPreloadRecommended?: string,
- *           assetPreloadCountryHeader?: string | null,
- *           githubRelease?: () => Promise<object | null>,
  *           studio?: { handles: (rawPath: string) => boolean, handle: (req: any, res: any, rawPath: string, query: string) => Promise<void> } | null }} deps
  *   trustProxy: whose forwarding headers name the client (net.js clientAddress; the server's TRUST_PROXY); studio: the
  *   plugin studio (server/studio/index.js), or none
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void}
  */
 export function createRequestHandler({ serveStatic, health, log, trustProxy = 'auto', studio = null, csp = null, trustedRuntime = null,
-  assetPreloadRecommended = 'github', assetPreloadCountryHeader = null, githubRelease = getGithubRelease, assetRelay = null }) {
+  assetPreloadRecommended = 'server' }) {
   async function handleRequest(req, res) {
     const url = req.url || '/';
     if (url.length > MAX_URL_LENGTH) { sendError(req, res, 414, '请求地址过长 · URI too long'); return; }
@@ -109,18 +98,7 @@ export function createRequestHandler({ serveStatic, health, log, trustProxy = 'a
       return;
     }
     if (parts.rawPath === '/asset-preload.json') {
-      sendJson(req, res, 200, { recommended: assetPreloadRecommended });
-      return;
-    }
-    if (parts.rawPath === '/asset-preload/github.json') {
-      const release = await githubRelease();
-      sendJson(req, res, 200, release ? { ...release, country: assetPreloadCountry(req, assetPreloadCountryHeader, trustProxy),
-        ...(assetRelay ? { relay: assetRelay.capability } : {}) } : null);
-      return;
-    }
-    if (parts.rawPath === '/asset-preload/github/archive' || parts.rawPath === '/asset-preload/github/status') {
-      if (!assetRelay) { sendJson(req, res, 403, { error: 'RELAY_DISABLED' }); return; }
-      await assetRelay.handle(req, res, parts.query, clientAddress(req, trustProxy).ip, parts.rawPath.endsWith('/status'));
+      sendJson(req, res, 200, { recommended: ['server', 'import'].includes(assetPreloadRecommended) ? assetPreloadRecommended : 'server' });
       return;
     }
     if (parts.rawPath === '/healthz') {

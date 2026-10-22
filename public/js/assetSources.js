@@ -1,14 +1,13 @@
 // Capability descriptors for the unified preloader. Insecure browsers use the working server HTTP-cache path.
-export const DEFAULT_PRELOAD_RECOMMENDED = 'github';
-const SOURCE_IDS = ['server', 'github', 'import'];
+export const DEFAULT_PRELOAD_RECOMMENDED = 'server';
+const SOURCE_IDS = ['server', 'import'];
 const recommendation = (value) => SOURCE_IDS.includes(value) ? value : DEFAULT_PRELOAD_RECOMMENDED;
 
-/** Capability and publication facts, separate from the server owner's recommendation. */
+/** Browser capability, separate from the server owner's recommendation. */
 export function preloadSources({ recommended = DEFAULT_PRELOAD_RECOMMENDED, importSupported = true } = {}) {
   const preferred = recommendation(recommended);
   return [
     { id: 'server', available: true, reason: null },
-    { id: 'github', available: true, reason: importSupported ? null : 'server-fallback' },
     { id: 'import', available: !!importSupported, reason: importSupported ? null : 'capability' },
   ].map((source) => ({ ...source, recommended: source.id === preferred }));
 }

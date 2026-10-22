@@ -268,7 +268,6 @@
 .asset-preload__sources > .btn { height: auto; min-height: .48rem; white-space: normal; justify-content: space-between; gap: .12rem; }
 .asset-preload__sources > .btn > .btn__label { display: flex; align-items: center; justify-content: space-between; gap: .12rem; width: 100%; }
 .asset-preload__sources > p { margin: 0; font-size: calc(.13 * var(--t)); }
-.asset-preload__availability { min-height: .62rem; }
 .asset-preload__recommendation-slot { flex: none; min-width: max(32px, .48rem); }
 .asset-preload__recommended { flex: none; border: 1px solid var(--mint-500); padding: .01rem .06rem; color: var(--mint-500); font-size: max(11px, calc(.12 * var(--t))); }
 .asset-preload__management { margin-top: .18rem; padding-top: .12rem; border-top: 1px solid var(--line); font-size: calc(.14 * var(--t)); }
@@ -282,9 +281,6 @@
 .asset-preload summary { min-height: 44px; padding: .06rem 0; }
 .asset-preload code { font-size: max(11px, calc(.13 * var(--t))); }
 .asset-preload .modal__actions, .asset-preload .asset-import__row { flex-wrap: wrap; }
-.asset-preload__advanced { margin: .12rem 0; font-size: max(12px, calc(.14 * var(--t))); }
-.asset-preload__advanced label { display: flex; align-items: center; min-height: 44px; gap: .08rem; padding: .06rem 0; cursor: pointer; }
-.asset-preload__advanced select { min-height: 44px; min-width: 0; max-width: 100%; flex: 1; padding: 0 .08rem; background: #0a0d0c; border: 1px solid var(--line); color: var(--text-hi); font: inherit; }
 .title-invite {
   display: flex;
   align-items: center;

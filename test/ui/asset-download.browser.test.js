@@ -22,7 +22,6 @@ test('unified preload sources, visible failure/retry, pause, cache reuse and res
   srv.server.removeAllListeners('request');
   srv.server.on('request', (req, res) => {
     const url = req.url;
-    if (url === '/asset-preload/github.json') { res.setHeader('Content-Type', 'application/json'); res.end('null'); return; }
     if (url === '/data/assets.json' || url === '/data/local-assets.json' || url === '/data/local-fx.json') {
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
@@ -46,7 +45,12 @@ test('unified preload sources, visible failure/retry, pause, cache reuse and res
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
+  const preloadRequests = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.startsWith('/asset-preload')) preloadRequests.push(pathname);
+  });
   await page.setViewport({ width: 1280, height: 900 });
   await page.goto(srv.url);
   await page.waitForSelector('[data-testid="asset-preload"]');
@@ -61,10 +65,8 @@ test('unified preload sources, visible failure/retry, pause, cache reuse and res
   await page.click('[data-testid="asset-preload"]');
   await page.waitForSelector('[data-testid="asset-source-server"]');
   assert.deepEqual(await page.$$eval('[data-testid="asset-preload-sources-list"] button', (buttons) => buttons.map((button) => button.dataset.testid)),
-    ['asset-source-server', 'asset-source-github', 'asset-source-import']);
+    ['asset-source-server', 'asset-source-import']);
   await page.waitForFunction(() => document.querySelector('[data-testid="asset-source-server"]')?.textContent.includes('推荐'));
-  assert.equal(await page.$eval('[data-testid="asset-source-github"]', (button) => button.disabled), false);
-  assert.equal(await page.$('[data-testid="asset-github-progress"]'), null, 'opening has not started the GitHub task');
   assert.equal(await page.$$eval('[data-testid="asset-preload-sources-list"] button p', (els) => els.length), 0,
     'source buttons have no explanatory subtitles');
   await page.waitForFunction(() => [...document.querySelectorAll('[data-testid^="asset-source-"]')]
@@ -74,6 +76,7 @@ test('unified preload sources, visible failure/retry, pause, cache reuse and res
     return button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
   })), 'every visible source centre hits its own button, including touch hit areas');
   assert.equal(counts.size, 0, 'opening the preloader only chooses a source');
+  assert.deepEqual(preloadRequests, ['/asset-preload.json'], 'opening reads only the two-source recommendation');
   assert.ok(await page.$eval('[role="dialog"]', (box) => box.contains(document.activeElement)), 'focus stays in the dialog');
   await page.mouse.click(1, 1);
   assert.ok(await page.$('.asset-preload'), 'the backdrop does not dismiss the dialog');

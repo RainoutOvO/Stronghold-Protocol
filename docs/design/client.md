@@ -303,33 +303,16 @@ Audio: autochess BGM per phase, UI SFX (buy/sell/refresh/level/merge/ready/timer
 ## 13. Local-client art (optional, host-side)
 
 Title-screen asset preload (PR #628's download, unified by downstream request 2026-10-21): one **资源预载** entry opens
-one dialog with three name-only source choices, server / GitHub / manual import. Opening never transfers asset or ZIP
-bodies. The owner can mark a source recommended (`SP_ASSET_PRELOAD_RECOMMENDED`, default GitHub); capability limits
-still disable an unusable source and explain the limit. The backdrop never closes it. Esc, close and changing source
+one dialog with two name-only source choices, server / manual import. Opening never transfers asset or ZIP
+bodies. The owner can mark a source recommended (`SP_ASSET_PRELOAD_RECOMMENDED=server|import`, default server;
+invalid settings fall back to server). Capability limits disable an unusable source and explain the limit.
+The backdrop never closes it. Esc, close and changing source
 stop active work first: pause server download, cancel import or verification, and retain completed writes.
 
 Selecting server preload starts the existing bounded queue into the browser's HTTP cache, with file progress,
 bytes read, pause/resume, recheck and failed-file retry. A listed response must be completely read before success;
 missing server files remain failures. Ordinary HTTP LAN deployment needs no service worker or HTTPS. Cache eviction,
 refresh and reopening never turn a historical completion flag into proof that every file remains cached.
-
-GitHub is one automatic task: discover the actual public full-game Release ZIP, verify existing cache first,
-read needed ZIP ranges, parse/decompress with the existing importer, check CRC/content hashes and whole Spine groups,
-then save only matching files under the existing hashed cache URLs. No native-download handoff or extra file choice.
-Completion requires fresh current-manifest verification and the game's controlling service worker. Missing/version-
-mismatched/non-public files stay partial and can be supplemented from the server. Closing pauses requests and retains
-saved files; reopening does not download. On insecure LAN HTTP GitHub transparently falls back to real server preload,
-with its actual source shown. Manual import still explains and disables unavailable browser capabilities.
-
-Trusted visitor-country CN prefers ghfast, other/unknown prefers direct; always-direct and trusted custom-mirror
-preferences override auto routing. No implicit IP-query service or locale/time-zone/server-location inference is used.
-An optional country header requires an owner-configured proxy that overwrites it. Public readable CORS is preferred;
-otherwise a bounded same-origin relay accepts only the fixed discovered public ZIP and owner-configured mirror IDs.
-HTTPS/public DNS pinning, strict redirects, no forwarded credentials, concurrency/rate/byte/deadline limits apply.
-If upstream ignores Range it streams to bounded temporary disk and shares that preparation, rather than buffering the
-archive in RAM. The owner can disable this bandwidth-consuming relay. Site CSP lists exact download origins; worker
-policy stays unchanged. See [DEPLOY](../DEPLOY.md#25-玩家资源预载服务器预载支持普通-http) and the
-[source audit](../research/unified-asset-preload.md) for limits and actual network/browser evidence.
 
 Local ZIP, directory and drop import reuse sliced reads and existing manifest validation. Only SHA-256-matching
 bytes are stored (a Spine model only as a whole group) in the existing Cache Storage, served by `public/sw.js` for

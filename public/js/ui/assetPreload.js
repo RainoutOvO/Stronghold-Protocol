@@ -3,22 +3,16 @@ import { useEffect, useLayoutEffect, useRef, useState } from '../../vendor/hooks
 import { html, Button, Modal, confirmDialog } from './components.js';
 import { AssetDownloadProgress } from './assetDownload.js';
 import { AssetImportPanel } from './assetImport.js';
-import { AssetGithubPanel, GITHUB_MIRROR_PREF, GITHUB_ROUTE_PREF, readGithubMirror, readGithubRoute } from './assetGithub.js';
 import { assetDownload } from '../assetDownload.js';
-import { assetGithubDownload } from '../assetGithubDownload.js';
 import { assetImport, pruneImportedAssets, verifyImportedAssets } from '../assetPack.js';
 import { askPersistStorage, clearImportedAssets, countImportedFiles, importSupport, storageEstimate } from '../assetCache.js';
-import { loadPreloadRecommendation, preloadSources } from '../assetSources.js';
+import { DEFAULT_PRELOAD_RECOMMENDED, loadPreloadRecommendation, preloadSources } from '../assetSources.js';
 import { t } from '../../../shared/i18n.js';
 
 export function AssetPreloadButton() {
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState(null);
-  const [recommended, setRecommended] = useState('github');
-  const [githubRoute, setGithubRoute] = useState(readGithubRoute);
-  const [githubMirror, setGithubMirror] = useState(readGithubMirror);
-  const [github, setGithub] = useState(() => assetGithubDownload.get());
-  const [fallback, setFallback] = useState(false);
+  const [recommended, setRecommended] = useState(DEFAULT_PRELOAD_RECOMMENDED);
   const [download, setDownload] = useState(() => assetDownload.get());
   const [imported, setImported] = useState(() => assetImport.get());
   const [info, setInfo] = useState(null);
@@ -34,9 +28,8 @@ export function AssetPreloadButton() {
   const verifyAbort = useRef(null);
   const support = importSupport();
   const downloadBusy = ['preparing', 'downloading'].includes(download.phase);
-  const githubBusy = ['preparing', 'downloading', 'importing', 'verifying', 'reading', 'checking', 'connecting'].includes(github.phase);
   const importBusy = collecting || ['reading', 'importing'].includes(imported.phase);
-  const busy = downloadBusy || githubBusy || importBusy || managing || leaving;
+  const busy = downloadBusy || importBusy || managing || leaving;
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -48,12 +41,11 @@ export function AssetPreloadButton() {
   useEffect(() => {
     live.current = true;
     const offDownload = assetDownload.subscribe(setDownload);
-    const offGithub = assetGithubDownload.subscribe(setGithub);
     const offImport = assetImport.subscribe(setImported);
     return () => {
       live.current = false;
-      offDownload(); offGithub(); offImport();
-      assetDownload.pause(); assetGithubDownload.pause(); assetImport.cancel(); verifyAbort.current?.abort();
+      offDownload(); offImport();
+      assetDownload.pause(); assetImport.cancel(); verifyAbort.current?.abort();
     };
   }, []);
   // Only the tiny preference endpoint and local index/estimate, never asset bodies on open.
@@ -64,36 +56,21 @@ export function AssetPreloadButton() {
     return () => { stop = true; };
   }, [open]);
   useEffect(() => {
-    if (!open || importBusy || githubBusy || managing) return undefined;
+    if (!open || importBusy || managing) return undefined;
     let stop = false;
     Promise.all([support.ok ? countImportedFiles() : Promise.resolve(null), storageEstimate()])
       .then(([count, estimate]) => { if (!stop) setInfo({ count, usage: estimate?.usage ?? null }); });
     return () => { stop = true; };
-  }, [open, imported.phase, github.phase, managing]);
+  }, [open, imported.phase, managing]);
   useEffect(() => {
-    if (importBusy || githubBusy) setVerified(null);
+    if (importBusy) setVerified(null);
     if (imported.accepted <= 0 || !['complete', 'partial'].includes(imported.phase)) return;
     askPersistStorage().then((value) => { if (live.current) setPersisted(value); });
   }, [imported.phase]);
-  useEffect(() => {
-    if (githubBusy) setVerified(null);
-    if ((github.accepted || github.done || 0) <= 0 || !['complete', 'partial'].includes(github.phase)) return;
-    askPersistStorage().then((value) => { if (live.current) setPersisted(value); });
-  }, [github.phase]);
-  useEffect(() => {
-    if (!open || source !== 'github' || !['error', 'fallback'].includes(github.phase) || !['worker', 'capability'].includes(github.error)) return undefined;
-    let stop = false;
-    assetGithubDownload.pause().then(() => {
-      if (stop || !live.current) return;
-      setFallback(true); setSource('server');
-      void assetDownload.start();
-    });
-    return () => { stop = true; };
-  }, [open, source, github.phase, github.error]);
 
   const stopTasks = async () => {
     verifyAbort.current?.abort();
-    await Promise.all([assetDownload.pause(), assetGithubDownload.pause(), assetImport.cancel(), operation.current]);
+    await Promise.all([assetDownload.pause(), assetImport.cancel(), operation.current]);
   };
   const leave = async (close) => {
     if (transition.current) return;
@@ -109,23 +86,11 @@ export function AssetPreloadButton() {
       if (live.current) setLeaving(false);
     }
   };
-  const startGithub = () => {
-    if (busy) return;
-    if (!support.ok) {
-      setFallback(true); setSource('server');
-      void assetDownload.start();
-      return;
-    }
-    setFallback(false);
-    void assetGithubDownload.start({ preference: githubRoute, mirrorId: githubMirror });
-  };
   const choose = (id) => {
     if (transition.current || busy || !preloadSources({ recommended, importSupported: support.ok }).find((item) => item.id === id)?.available) return;
     transition.current = true;
     setSource(id);
-    setFallback(false);
     if (id === 'server') void assetDownload.start();
-    if (id === 'github') startGithub();
   };
   const manage = (kind) => {
     if (operation.current || busy) return;
@@ -157,7 +122,6 @@ export function AssetPreloadButton() {
           if (live.current) setNote(t('已清理 {n} 个旧版本文件。', { n: result.removedFiles }));
         }
         await assetDownload.invalidate();
-        await assetGithubDownload.invalidate?.();
       } catch (error) {
         if (live.current && error?.name !== 'AbortError') setNote(t('无法检查或清理素材，请重试。'));
       } finally { verifyAbort.current = null; }
@@ -171,10 +135,9 @@ export function AssetPreloadButton() {
   const checkUpdates = () => {
     if (busy) return;
     setSource('server');
-    setFallback(false);
     void assetDownload.recheck();
   };
-  const labels = { server: t('从服务器预载素材'), github: t('从 GitHub 预载素材'), import: t('手动导入预载素材') };
+  const labels = { server: t('从服务器预载素材'), import: t('手动导入预载素材') };
 
   return html`<div class="title-assets__item">
     <${Button} variant="secondary" block=${true} size="sm" data-testid="asset-preload" onClick=${() => {
@@ -183,9 +146,9 @@ export function AssetPreloadButton() {
     <${Modal} open=${open} title=${t('资源预载')} closeOnBackdrop=${false} class="asset-preload"
       onClose=${() => void leave(true)} actions=${html`
         ${source ? html`<${Button} size="sm" data-testid="asset-preload-sources" disabled=${leaving || managing}
-          onClick=${() => void leave(false)}>${downloadBusy || githubBusy ? t('暂停并更换来源') : importBusy ? t('取消并更换来源') : t('更换来源')}<//>` : null}
+          onClick=${() => void leave(false)}>${downloadBusy ? t('暂停并更换来源') : importBusy ? t('取消并更换来源') : t('更换来源')}<//>` : null}
         <${Button} size="sm" data-testid="asset-preload-close" disabled=${leaving} onClick=${() => void leave(true)}>
-          ${leaving ? t('正在停止…') : downloadBusy || githubBusy ? t('暂停并关闭') : importBusy ? t('取消并关闭') : t('关闭')}<//>`}>
+          ${leaving ? t('正在停止…') : downloadBusy ? t('暂停并关闭') : importBusy ? t('取消并关闭') : t('关闭')}<//>`}>
       ${!source ? html`<div class="asset-preload__sources" data-testid="asset-preload-sources-list">
         ${preloadSources({ recommended, importSupported: support.ok }).map((item) => html`
           <${Button} key=${item.id} variant="secondary" block=${true} disabled=${busy || !item.available}
@@ -194,19 +157,9 @@ export function AssetPreloadButton() {
               ? html`<span class="asset-preload__recommended">${t('推荐')}</span>` : null}</span>
           <//>`)}
         ${!support.ok ? html`<p class="t-lo" data-testid="asset-import-unavailable">${support.reason === 'insecure'
-          ? t('普通 HTTP 下将使用服务器预载；手动导入不可用。') : t('此浏览器不能导入本地素材，GitHub 来源将使用服务器预载。')}</p>` : null}
+          ? t('此地址支持服务器预载；浏览器不支持在普通 HTTP 下导入本地素材。') : t('此浏览器不支持导入本地素材，请使用服务器预载。')}</p>` : null}
       </div>` : source === 'server' ? html`
-        ${fallback ? html`<p role="status" data-testid="asset-preload-fallback">${t('当前浏览器无法保存 GitHub 素材，已自动切换为服务器预载。')}</p>` : null}
         <${AssetDownloadProgress} state=${download} disabled=${managing || leaving} />`
-        : source === 'github' ? html`<${AssetGithubPanel} state=${github} route=${githubRoute} mirrorId=${githubMirror}
-          onRoute=${(value) => {
-            setGithubRoute(value);
-            try { localStorage.setItem(GITHUB_ROUTE_PREF, value); } catch { /* private mode: keep this session's preference */ }
-          }} onMirror=${(value) => {
-            setGithubMirror(value);
-            try { localStorage.setItem(GITHUB_MIRROR_PREF, value); } catch { /* private mode */ }
-          }} onStart=${startGithub} onPause=${() => void assetGithubDownload.pause()}
-          onSupplement=${checkUpdates} disabled=${managing || leaving} busy=${githubBusy} />`
         : html`<${AssetImportPanel} imported=${imported} disabled=${managing || leaving}
           onCollecting=${(value) => { if (live.current) setCollecting(value); }} />`}
       <details class="asset-preload__management" data-testid="asset-preload-management">

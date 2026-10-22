@@ -210,6 +210,8 @@ test('zip: stored, deflate, data descriptor, bad crc, unsupported method, trunca
 
   const bad = await openZip(buildZip([{ name: 'a.png', raw, crc: 1 }]));
   assert.equal((await bad.read(bad.entries[0])).code, 'bad-entry');
+  const zeroCrc = await openZip(buildZip([{ name: 'a.png', raw, crc: 0 }]));
+  assert.equal((await zeroCrc.read(zeroCrc.entries[0])).code, 'bad-entry', 'zero is a checksum, not an opt-out');
   const weird = await openZip(buildZip([{ name: 'a.png', raw, method: 14 }]));
   assert.equal((await weird.read(weird.entries[0])).code, 'unsupported');
   const broken = await openZip(new Uint8Array([1, 2, 3, 4, 5]));

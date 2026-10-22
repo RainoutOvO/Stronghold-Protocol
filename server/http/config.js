@@ -10,51 +10,26 @@
 //     with a warning when the server starts, and an explicit startServer() option still wins over the environment;
 //   * SP_ASSET_INDEX=0 (or the `assetIndex: false` option) → no content-hash index: plain asset URLs, size-mtime ETags
 //     (assetIndex.js); the index of the default public/ persists in .cache/asset-hashes.json;
-//   * SP_ASSET_PRELOAD_RECOMMENDED=server|github|import (default github): a public UI hint; optional
-//     SP_ASSET_PRELOAD_COUNTRY_HEADER names a country header overwritten by the trusted proxy, never an IP lookup;
+//   * SP_ASSET_PRELOAD_RECOMMENDED=server|import (default server): a public UI recommendation;
 //   * the served directories (public/, data/, shared/, the content packs' packs/ and the plugins' plugins/ of this
 //     repository unless the options name others), and which startServer() options are handed on to net.js Network and
 //     lobby.js Lobby.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeAssetMirrors } from './assetRelay.js';
 
 /** Repository root. */
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 
-/** Owner-controlled public release relay. Mirrors are a short JSON array of HTTPS prefix descriptors, never player URLs. */
-export function assetPreloadRelayOptions(opts = {}, log = noopLog) {
-  const rawEnabled = opts.assetPreloadRelay ?? process.env.SP_ASSET_PRELOAD_RELAY ?? true;
-  const enabled = !['0', 'false', 'off', 'no'].includes(String(rawEnabled).trim().toLowerCase());
-  let raw = opts.assetPreloadMirrors ?? process.env.SP_ASSET_PRELOAD_MIRRORS ?? [];
-  if (typeof raw === 'string') {
-    try { raw = JSON.parse(raw); } catch { log.warn('[assets] invalid SP_ASSET_PRELOAD_MIRRORS JSON; custom mirrors disabled'); raw = []; }
-  }
-  const mirrors = normalizeAssetMirrors(raw);
-  if (!Array.isArray(raw) || mirrors.length !== raw.length) log.warn('[assets] invalid custom asset mirrors were ignored');
-  return { enabled, mirrors };
-}
-
-/** Public preloader hint only; this setting never grants a download origin or changes the site's CSP. */
+/** Public recommendation only; browser capability checks still apply. */
 export function assetPreloadRecommendation(opts = {}, log = noopLog) {
-  const value = opts.assetPreloadRecommended ?? process.env.SP_ASSET_PRELOAD_RECOMMENDED ?? 'github';
+  const value = opts.assetPreloadRecommended ?? process.env.SP_ASSET_PRELOAD_RECOMMENDED ?? 'server';
   const source = String(value).trim().toLowerCase();
-  if (['server', 'github', 'import'].includes(source)) return source;
-  log.warn('[assets] invalid SP_ASSET_PRELOAD_RECOMMENDED; use server, github or import (default: github)');
-  return 'github';
-}
-
-/** Opt in only when a trusted reverse proxy overwrites this header with the visiting player's exit country. */
-export function assetPreloadCountryHeader(opts = {}, log = noopLog) {
-  const value = Object.hasOwn(opts, 'assetPreloadCountryHeader') ? opts.assetPreloadCountryHeader : process.env.SP_ASSET_PRELOAD_COUNTRY_HEADER;
-  if (value == null || value === '') return null;
-  const header = String(value).trim().toLowerCase();
-  if (/^[a-z][a-z0-9-]{0,63}$/.test(header) && header.includes('country')) return header;
-  log.warn('[assets] invalid SP_ASSET_PRELOAD_COUNTRY_HEADER; country routing disabled');
-  return null;
+  if (['server', 'import'].includes(source)) return source;
+  log.warn('[assets] invalid SP_ASSET_PRELOAD_RECOMMENDED; use server or import (default: server)');
+  return 'server';
 }
 
 /** startServer() options handed on to net.js Network / lobby.js Lobby (an absent one keeps that module's default). */

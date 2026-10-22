@@ -114,12 +114,6 @@ function zip64Extra(extra, need) {
  * @param {Blob | ArrayBuffer | Uint8Array} data
  */
 async function zipSource(data) {
-  // Explicit random-access protocol used by the GitHub reader. Never fall through to a remote object's whole-file
-  // arrayBuffer(): a release archive can be much larger than the browser's memory budget.
-  if (data?.type === 'asset-archive' && Number.isSafeInteger(data.size) && data.size >= 0
-    && typeof data.read === 'function' && typeof data.part === 'function') {
-    return { size: data.size, read: data.read, part: data.part, copies: true };
-  }
   if (data && typeof data.slice === 'function' && typeof data.arrayBuffer === 'function' && typeof data.stream === 'function'
     && Number.isFinite(data.size)) {
     return {
@@ -583,7 +577,7 @@ export async function pruneImportedAssets({ fetch: doFetch = (...args) => global
  * the existing prune operation. A failed repair/index write throws: callers must not display a successful check.
  */
 export async function verifyImportedAssets({ fetch: doFetch = (...args) => globalThis.fetch(...args),
-  caches: cachesApi = globalThis.caches, signal, onProgress, includePaths = false } = {}) {
+  caches: cachesApi = globalThis.caches, signal, onProgress } = {}) {
   const abort = () => { if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); };
   abort();
   const { assets, local, fx } = await readServedManifests(doFetch, signal);
@@ -712,7 +706,7 @@ export async function verifyImportedAssets({ fetch: doFetch = (...args) => globa
   const canonical = (url) => url.startsWith('/assets/') || url.startsWith('/fonts/');
   return { verifiedFiles: valid.size, logicalBytes: [...valid.values()].reduce((sum, size) => sum + size, 0),
     missingFiles: [...missing].filter(canonical).length, invalidFiles: [...invalid].filter(canonical).length,
-    indexedFiles: [...indexed].filter(canonical).length, ...(includePaths ? { verifiedPaths: [...acceptedPaths] } : {}) };
+    indexedFiles: [...indexed].filter(canonical).length };
 }
 
 /** The cache keys of one served URL: itself, plus the `/media/~hash/…` alias when playback would request it. */
@@ -907,25 +901,8 @@ export function createAssetImport({
           try { storedPaths.add(new URL(url, 'http://localhost').pathname); } catch { /* not a URL: never stored */ }
         }
       };
-      const reusable = async (url) => {
-        if (!source?.skipUrls?.has?.(url)) return false;
-        if (!cache) cache = await cachesApi.open(IMPORTED_ASSET_CACHE);
-        for (const key of cacheUrlsFor(url)) {
-          const hit = await cache.match(key);
-          if (!hit || hit.status !== 200) { await hit?.body?.cancel?.(); return false; }
-          await hit.body?.cancel?.();
-        }
-        return true;
-      };
-
       for (const group of plan.groups) {
         if (cancelFlag) break;
-        let reuse = true;
-        for (const member of group.members) if (!(await reusable(member.url))) { reuse = false; break; }
-        if (reuse) {
-          for (const member of group.members) if (packByRel.has(member.rel)) settle(member.rel, 'accepted');
-          continue;
-        }
         const present = group.members.filter((member) => packByRel.has(member.rel));
         if (present.length !== group.members.length) {
           for (const member of present) {
@@ -989,7 +966,6 @@ export function createAssetImport({
       for (const [rel, spec] of plan.files) {
         if (cancelFlag) break;
         if (outcome.has(rel) || !packByRel.has(rel)) continue;
-        if (await reusable(spec.url)) { settle(rel, 'accepted'); continue; }
         const got = await readRel(rel);
         if (cancelFlag) break;
         if (!got?.ok || !got.bytes?.byteLength) {

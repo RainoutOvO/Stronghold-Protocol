@@ -3,7 +3,7 @@
 // no download); a pack laid out like `node tools/package.mjs --assets` writes it (one folder, public/assets/…, a
 // README.txt) goes in through the dialog's zip picker. Then a one-file zip and a folder-shaped file list are imported,
 // and the server preloader does not request those bytes. A second page uses the machine's real LAN HTTP address
-// (or a simulated insecure context if none exists) and explains the supported server-preload fallback.
+// (or a simulated insecure context if none exists) and exercises server preloading without a service worker.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -65,7 +65,7 @@ function buildStoredZip(files) {
   return out;
 }
 
-test('unified manual import requests no art on open, reuses validated files, manages storage and supports HTTP LAN fallback', {
+test('unified manual import requests no art on open, reuses validated files, manages storage and supports HTTP LAN', {
   skip: process.env.SP_E2E !== '1' || !hasChrome(), timeout: 90000,
 }, async (t) => {
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
@@ -85,7 +85,6 @@ test('unified manual import requests no art on open, reuses validated files, man
   srv.server.on('request', (req, res) => {
     const url = req.url.split('?')[0];
     requests.push(url);
-    if (url === '/asset-preload/github.json') { res.setHeader('Content-Type', 'application/json'); res.end('null'); return; }
     if (req.url.startsWith('/healthz')) probes++;
     // (local-fx.json: the host's official battle effects, DESIGN §33 — none in this fixture)
     if (url === '/data/assets.json' || url === '/data/local-assets.json' || url === '/data/local-fx.json') {
@@ -228,12 +227,10 @@ test('unified manual import requests no art on open, reuses validated files, man
   const reason = await insecure.$eval('[data-testid="asset-import-unavailable"]', (el) => el.textContent);
   assert.match(reason, /HTTP/);
   assert.equal(await insecure.$eval('[data-testid="asset-source-import"]', (button) => button.disabled), true);
-  assert.equal(await insecure.$eval('[data-testid="asset-source-github"]', (button) => button.disabled), false,
-    'GitHub can automatically select the supported server fallback on HTTP LAN');
+  assert.equal(await insecure.$eval('[data-testid="asset-source-server"]', (button) => button.disabled), false);
+  assert.equal(await insecure.$$eval('[data-testid="asset-preload-sources-list"] button', (buttons) => buttons.length), 2);
   assert.equal(await insecure.$('[data-testid="asset-import-folder"]'), null);
-  await insecure.locator('[data-testid="asset-source-github"]').click();
-  await insecure.waitForSelector('[data-testid="asset-preload-fallback"]');
-  assert.match(await insecure.$eval('[data-testid="asset-preload-fallback"]', (el) => el.textContent), /已自动切换为服务器预载/);
+  await insecure.locator('[data-testid="asset-source-server"]').click();
   await insecure.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('1 个素材下载失败'));
   assert.equal(await insecure.evaluate(async () => (await import('/js/assetDownload.js')).assetDownload.get().done), 3,
     'ordinary HTTP LAN can preload from the server without a Service Worker');
