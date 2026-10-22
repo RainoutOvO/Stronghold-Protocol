@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 // SES evaluates confined code. This relaxation belongs only to the simulation Worker, never its parent document.
 export const SIM_WORKER_CSP = "default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'none'";
 
-export function siteCsp(publicDir) {
+export function siteCsp(publicDir, { assetPreloadOrigins = [] } = {}) {
   const hashes = new Set();
   for (const rel of ['index.html', 'studio/index.html', 'studio/console.html', 'dev/game-mock.html', 'dev/render-demo.html', 'dev/battle-perf.html', 'dev/uikit.html']) {
     let html;
@@ -18,5 +18,8 @@ export function siteCsp(publicDir) {
       hashes.add(`'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
     }
   }
-  return `default-src 'self'; script-src 'self'${hashes.size ? ' ' + [...hashes].join(' ') : ''}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'`;
+  const origins = [...new Set(assetPreloadOrigins.filter((origin) => {
+    try { const url = new URL(origin); return url.protocol === 'https:' && !url.username && !url.password && url.origin === origin; } catch { return false; }
+  }))];
+  return `default-src 'self'; script-src 'self'${hashes.size ? ' ' + [...hashes].join(' ') : ''}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'${origins.length ? ' ' + origins.join(' ') : ''}; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'`;
 }

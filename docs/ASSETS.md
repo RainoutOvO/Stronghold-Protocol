@@ -725,8 +725,16 @@ bandwidth, layer 1) the server hands out a view of each (`server/http/assetIndex
 
 ## Player-initiated predownload
 
-The title screen's **下载完整素材** button (`public/js/ui/assetDownload.js`, queue in
-`public/js/assetDownload.js`) downloads every unique art/font URL in the server's current `assets.json` and optional
+The title screen's **资源预载** button (`public/js/ui/assetPreload.js`) opens one dialog with three name-only source
+choices: **从服务器预载素材**, **从 GitHub 预载素材**, and **手动导入预载素材**. Opening it transfers no asset or ZIP
+bodies. It reads only small same-origin configuration/release metadata and, where available, the local import index
+and whole-origin storage estimate. `SP_ASSET_PRELOAD_RECOMMENDED=server|github|import` controls the recommendation
+badge (default `github`), exposed by `GET /asset-preload.json`; it does not override browser capability checks.
+The backdrop never dismisses the dialog. Esc and the close button pause the server queue, cancel import/check work,
+and await that work before closing. Completed browser cache writes survive; reopening does not start another task.
+
+Selecting the server source (`public/js/ui/assetDownload.js`, queue in `public/js/assetDownload.js`) starts downloading
+every unique art/font URL in the server's current `assets.json` and optional
 `local-assets.json`, including Spine skeletons, atlases, pages, scene files, and audio. Audio uses the same `/media/`
 URLs as playback. Four concurrent requests consume complete response bodies without decoding them or retaining
 all files in memory. This warms the existing browser HTTP cache and works over HTTP as well as HTTPS; it does not
@@ -742,7 +750,14 @@ with setup; this button only transfers files already supplied by the server.
 
 ## Importing a local asset pack
 
-The title screen's **导入素材包** button (`public/js/ui/assetImport.js`), beside 下载完整素材, opens its own dialog. Opening it requests nothing from the server and never starts the download queue; the manifests are read once an import starts. It imports art the player already has: the example asset pack `node tools/package.mjs --assets` writes (one folder holding `public/assets/…`, `public/fonts/…` and a `README.txt`; the maintainer offers it for download outside the GitHub release), a setup `public/assets` folder, or a published full zip whose paths contain `public/assets/`. The page reads a zip's central directory in the browser, and a picked or dropped zip File slice by slice, so a whole pack (some 700 MB) is never held in memory at once. Method 0 (stored) is copied. Method 8 is inflated with `DecompressionStream('deflate-raw')`. Any other method, and an encrypted entry, is counted and skipped. Nothing is uploaded.
+The **手动导入预载素材** choice embeds the existing ZIP, directory and drag-and-drop controls (`public/js/ui/assetImport.js`)
+in the same dialog. Manifests are read once an import starts; selecting this choice does not start a server download.
+It imports art the player already has: the example asset pack `node tools/package.mjs --assets` writes (one folder
+holding `public/assets/…`, `public/fonts/…` and a `README.txt`; the maintainer offers it for download outside the GitHub
+release), a setup `public/assets` folder, or a published full zip whose paths contain `public/assets/`. The page reads
+a zip's central directory in the browser, and a picked or dropped zip File slice by slice, so a whole pack (some
+700 MB) is never held in memory at once. Method 0 (stored) is copied. Method 8 is inflated with
+`DecompressionStream('deflate-raw')`. Any other method, and an encrypted entry, is counted and skipped. Nothing is uploaded.
 
 Verification uses the served manifests (`GET /data/assets.json`, and `GET /data/local-assets.json` and `GET /data/local-fx.json` when the server has them). A hashed URL maps back to a plain `assets/…` or `fonts/…` path. A file is stored only when the first 16 hex digits of its SHA-256 equal the hash in that URL. A Spine model is accepted only as a whole group, with the same model hash the server uses: SHA-256 of the members' file hashes joined by newlines (skeleton, atlas, then pages — the default `<skel>.png` when the manifest lists no textures). A mismatch, or a file the manifest does not list, is not stored. A path with no hash segment cannot be checked, so it is not imported; the download queue can still fetch it.
 
@@ -751,6 +766,67 @@ Accepted bytes go into Cache Storage under the name `sp-imported-assets-v1`, at 
 `worker-src 'self' blob:` was already the site policy (`server/http/csp.js`). `'self'` is what `/sw.js` needs. `blob:` stays for the simulation worker the page already starts. No remote worker origin is added, and `SIM_WORKER_CSP` does not gain this worker.
 
 On `http://` to a LAN IP, `isSecureContext` is false. The import controls explain why and do not throw. Download still works over plain HTTP. The download queue does not request a URL already present in the import cache. Closing the import dialog cancels an in-progress import; closing the download dialog pauses the download. Clear deletes only this cache. `navigator.storage.estimate()` is the whole origin, and `navigator.storage.persist()` is a request the browser may refuse. The dialog asks once, as an import ends; 设置 → 素材存储 (`public/js/ui/settings.js` StorageSection, 0.3.1) shows the current answer (`navigator.storage.persisted()`) and asks again on demand. A changed file gets a new hash, so its imported copy is never served again, but it stays in the cache until 设置 → 素材存储 → 清理旧版本素材 (0.3.1; `public/js/assetPack.js` pruneImportedAssets) deletes every entry a fresh import from the current manifests would not store — the same three manifests an import reads, a plan file's alternative hashes and the /media alias included; a manifest it cannot read deletes nothing — or 清除已导入的素材 deletes them all. The index is rewritten to what remains.
+
+## Automatic GitHub full-package preload
+
+Selecting GitHub starts an automatic task (`assetGithubDownload.js`), with no native-download handoff or file picker.
+`GET /asset-preload/github.json` discovers only the official upstream's actual uploaded full-game
+`Stronghold-Protocol-v<version>.zip`; lite/update/source archives and invented `-assets.zip` URLs are rejected.
+Discovery retains an 8-second timeout, 1 MiB JSON cap, shared in-flight request, 15-minute success cache and
+one-minute failure cooldown. A failed discovery stops the task honestly; server preload remains available.
+
+The client first verifies existing imported bodies against fresh server manifests, including whole Spine groups.
+If all current files are reusable it reads no ZIP bytes. Otherwise `assetArchive.js` reads a ZIP tail and central
+directory through bounded HTTP ranges, exposing the same random-read/entry-stream protocol as sliced local ZIPs.
+The existing `assetPack.js` parser handles stored/deflated/ZIP64 entries, CRCs, path filtering, SHA-256 and whole
+Spine validation. Only needed, matching files are stored, under the existing hashed game URLs and audio aliases.
+The range LRU holds at most 16 × 512 KiB by default; a request never exceeds 8 MiB. Central-directory/entry limits
+remain 64/256 MiB, and decompression cannot exceed the entry's declared uncompressed size. Memory is bounded by
+these limits and the current file or whole Spine group's validation/storage work, not by the entire ~845 MB archive.
+
+The post-processed files in a full package may differ from this server's newer install or optional local extraction
+and official FX. Hash-mismatched, absent and unreadable members never count as ready; the result stays partial and
+offers server supplementation. Completion requires a fresh cache verification for every current requested URL and
+the project's service worker actually controlling this page. Pause/close/refresh retain verified files; reopening
+does not start a transfer. HTTP audio Range handling in `public/sw.js` is unchanged.
+
+Auto routing uses ghfast first for a trusted visitor-country `CN`, direct first for other/unknown countries, with
+finite retries and route fallback. Always-direct suppresses mirror fallback, including in the relay. An optional
+trusted proxy country header is described in DEPLOY; no IP-query service, locale/time-zone/server-location guess
+is added. Advanced preferences persist locally. Custom mirrors are chosen only from the owner's short trusted
+HTTPS prefix list; the page cannot turn the relay into a caller-controlled proxy.
+
+Public CORS reads are tried first with omitted credentials and referrer. The tested official/ghfast full ZIPs lack
+readable CORS, so the automatic same-origin fallback is `GET /asset-preload/github/archive?version=…&route=…`.
+It accepts only an exact current release/version and known route/mirror ID, plus a single bounded Range. HTTPS-only
+public DNS pinning, fixed redirect destinations, header/idle/total deadlines, byte accounting, per-client/global
+concurrency and rate limits apply. No incoming Cookie, Authorization, referrer, proxy identity or client certificate
+is forwarded. If the upstream ignores Range, one shared streaming task writes the archive to bounded temporary disk,
+checks size/ZIP signature and the official SHA-256 when published, then serves ranges from that file. Cancellation
+of the last waiter aborts preparation; disconnects abort streaming; shutdown removes this instance's temporary files.
+No full archive is buffered in Node or the browser. See [DEPLOY](DEPLOY.md#25-玩家资源预载服务器预载支持普通-http)
+for the default-on relay's real bandwidth/disk cost and owner disable control.
+
+Ordinary LAN HTTP lacks the existing secure-context import storage/worker capabilities. Selecting GitHub there
+automatically starts the server HTTP-cache preloader and clearly labels the actual server source; manual import
+remains unavailable. This does not require HTTPS for game startup, networking or server preload.
+The [source audit](research/unified-asset-preload.md) separates actual public probes from controlled ZIP browser tests.
+
+## Managing preload storage
+
+The dialog's **素材管理** section reads the compact import index on open, labels its count as **not yet verified**,
+and labels `navigator.storage.estimate().usage` as the **whole site's storage estimate**. It never enumerates all
+Cache Storage entries on open, or equates a historical download completion with present cache completeness.
+**核实已导入素材** explicitly reads the current manifests and stored bodies, hashes each file, checks Spine groups,
+repairs missing audio aliases and the index, and reports verified current file count, logical bytes, missing files
+and invalid files. Logical bytes count canonical files once, excluding the `/media/` aliases. The operation retains
+one file body at a time; cancellation or a failed index/cache write cannot produce a successful verification result.
+
+**检查资源更新** reloads the served manifests and restarts the server queue with normal HTTP-cache validation,
+supplementing missing/changed entries and using reusable imported files. **清理旧版本素材** reuses the existing
+manifest-based prune; **清除已导入的素材** deletes only the named import cache. Both ask for confirmation and explain
+that the browser's HTTP cache cannot be enumerated or deleted by this page. **更换来源** remains available after
+completion and first stops any active task. No HTTPS requirement is added to server preload, game startup or play.
 
 ## Verification
 

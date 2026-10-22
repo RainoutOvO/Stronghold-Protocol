@@ -1,9 +1,9 @@
 // SP_E2E=1 node --test test/ui/asset-import.browser.test.js
-// The title screen's 导入素材包 (ui/assetImport.js): opening its dialog asks the server for nothing (no art, no manifest,
+// The unified preloader's manual source (ui/assetImport.js): opening asks for no art or manifest,
 // no download); a pack laid out like `node tools/package.mjs --assets` writes it (one folder, public/assets/…, a
 // README.txt) goes in through the dialog's zip picker. Then a one-file zip and a folder-shaped file list are imported,
-// and the server is not asked for those bytes, not even by 下载完整素材. A second page with isSecureContext forced off
-// must say on the title screen and in the dialog why import is unavailable.
+// and the server preloader does not request those bytes. A second page uses the machine's real LAN HTTP address
+// (or a simulated insecure context if none exists) and explains the supported server-preload fallback.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,6 +13,7 @@ import { startServer } from '../../server/index.js';
 import { hash16 } from '../../server/http/assetIndex.js';
 import { crc32 } from '../../public/js/assetPack.js';
 import { CHROME, hasChrome } from '../e2e/client.mjs';
+import { assetPreloadScreenshots } from './assetPreloadScreenshots.mjs';
 
 /** A zip of stored entries: `[{ name, raw }]`. */
 function buildStoredZip(files) {
@@ -64,7 +65,7 @@ function buildStoredZip(files) {
   return out;
 }
 
-test('import has its own dialog that requests nothing on opening; imported art is not fetched again; plain HTTP explains why import is off', {
+test('unified manual import requests no art on open, reuses validated files, manages storage and supports HTTP LAN fallback', {
   skip: process.env.SP_E2E !== '1' || !hasChrome(), timeout: 90000,
 }, async (t) => {
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
@@ -77,12 +78,14 @@ test('import has its own dialog that requests nothing on opening; imported art i
   const counts = new Map();
   const requests = [];
   let probes = 0;
-  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, assetIndex: false });
+  const srv = await startServer({ port: 0, host: '0.0.0.0', quiet: true, assetIndex: false });
+  const baseUrl = `http://127.0.0.1:${srv.port}`;
   const serve = srv.server.listeners('request')[0];
   srv.server.removeAllListeners('request');
   srv.server.on('request', (req, res) => {
     const url = req.url.split('?')[0];
     requests.push(url);
+    if (url === '/asset-preload/github.json') { res.setHeader('Content-Type', 'application/json'); res.end('null'); return; }
     if (req.url.startsWith('/healthz')) probes++;
     // (local-fx.json: the host's official battle effects, DESIGN §33 — none in this fixture)
     if (url === '/data/assets.json' || url === '/data/local-assets.json' || url === '/data/local-fx.json') {
@@ -105,30 +108,32 @@ test('import has its own dialog that requests nothing on opening; imported art i
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-asset-import-'));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const { default: puppeteer } = await import('puppeteer-core');
-  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox', '--no-proxy-server'] });
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(srv.url);
+  await page.goto(baseUrl);
   await page.waitForFunction(() => navigator.serviceWorker.controller != null, { timeout: 20000 });
-  await page.waitForSelector('[data-testid="asset-import"]');
+  await page.waitForSelector('[data-testid="asset-preload"]');
   // a first gesture unlocks audio (public/js/audio.js): make it elsewhere, so what follows is the dialog's own traffic
   await page.click('.title-tag');
   await new Promise((resolve) => setTimeout(resolve, 500));
   const quiet = requests.length;
-  await page.click('[data-testid="asset-import"]');
+  await page.click('[data-testid="asset-preload"]');
+  await page.locator('[data-testid="asset-source-import"]').click();
   await page.waitForSelector('.asset-import-dialog [data-testid="asset-import-zip"]');
   await new Promise((resolve) => setTimeout(resolve, 800));
   const opening = requests.slice(quiet);
   assert.deepEqual(opening.filter((url) => /^\/(?:assets|media|fonts)\//.test(url) || /^\/data\//.test(url)), [],
     'opening the import dialog requests no art and no manifest');
-  assert.equal(await page.$('.asset-download'), null, 'the download dialog stays closed');
+  assert.equal(await page.$('.asset-download'), null, 'the download progress stays closed');
   assert.deepEqual(await page.evaluate(async () => ({
     download: (await import('/js/assetDownload.js')).assetDownload.get().phase,
     import: (await import('/js/assetPack.js')).assetImport.get().phase,
   })), { download: 'idle', import: 'idle' });
-  assert.ok(await page.$eval('.asset-import-dialog', (box) => box.contains(document.activeElement)), 'the dialog holds the focus');
+  assert.ok(await page.$eval('.asset-preload', (box) => box.contains(document.activeElement)), 'the dialog holds the focus');
+  await assetPreloadScreenshots(page, 'import');
 
   // a pack laid out like `node tools/package.mjs --assets`, through the dialog's zip picker
   const packZip = path.join(tmp, 'Stronghold-Protocol-v9.9.9-assets.zip');
@@ -141,6 +146,21 @@ test('import has its own dialog that requests nothing on opening; imported art i
   await page.waitForFunction(() => document.querySelector('[data-testid="asset-import-status"]')?.textContent.includes('导入完成'));
   assert.match(await page.$eval('[data-testid="asset-import-counts"]', (el) => el.textContent), /已导入 1 个，校验不符 0 个，跳过 1 个，无法读取 0 个/);
   assert.equal(counts.get(packUrl) || 0, 0);
+
+  // Cancel a pending file read through the real panel; completed bytes remain and late bytes never become trusted.
+  await page.evaluate(async (ready, pending) => {
+    const { assetImport } = await import('/js/assetPack.js');
+    void assetImport.start({ type: 'files', files: [
+      { path: 'public/assets/import-zip.png', read: async () => new Uint8Array(ready) },
+      { path: 'public/assets/import-folder.png', read: () => new Promise((resolve) => { globalThis.__finishImportRead = () => resolve(new Uint8Array(pending)); }) },
+    ] });
+  }, [...png], [...folderPng]);
+  await page.waitForFunction(async () => (await import('/js/assetPack.js')).assetImport.get().accepted === 1 && !!globalThis.__finishImportRead);
+  await page.locator('[data-testid="asset-import-cancel"]').click();
+  await page.evaluate(() => globalThis.__finishImportRead());
+  await page.waitForFunction(async () => (await import('/js/assetPack.js')).assetImport.get().phase === 'cancelled');
+  assert.equal(await page.evaluate(async () => (await import('/js/assetCache.js')).countImportedFiles()), 2);
+  assert.equal(await page.evaluate(async (url) => (await (await import('/js/assetCache.js')).openImportedAssetLookup()).has(url), folderUrl), false);
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('.asset-import-dialog'));
 
@@ -170,25 +190,52 @@ test('import has its own dialog that requests nothing on opening; imported art i
   await page.evaluate(() => fetch('/healthz?import-probe=1'));
   assert.ok(probes > beforeProbe, 'a non-asset URL still reaches the server');
 
-  await page.click('[data-testid="asset-download"]');
+  await page.click('[data-testid="asset-preload"]');
+  await page.click('[data-testid="asset-preload-sources"]');
+  await page.locator('[data-testid="asset-source-server"]').click();
   await page.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('1 个素材下载失败'));
   assert.equal(counts.get(zipUrl) || 0, 0, 'download skips the imported zip file');
   assert.equal(counts.get(folderUrl) || 0, 0, 'download skips the imported folder file');
   assert.equal(counts.get(packUrl) || 0, 0, 'download skips the file of the pack');
   assert.equal(counts.get(missing), 1);
-  assert.equal(await page.$('.asset-download .asset-import__row'), null, 'the download dialog has no import controls');
+  assert.equal(await page.$('.asset-download [data-testid="asset-import-zip"]'), null, 'server progress has no import controls');
 
-  const insecure = await browser.newPage();
-  await insecure.evaluateOnNewDocument(() => {
-    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false });
-  });
-  await insecure.goto(srv.url);
-  await insecure.waitForSelector('[data-testid="asset-import"]');
-  assert.match(await insecure.$eval('#title-asset-import-hint', (el) => el.textContent), /HTTPS/, 'the hint under the button says why');
-  await insecure.click('[data-testid="asset-import"]');
+  // Index counts are explicitly unverified; checking reads actual cache bytes, and clear promises only managed art.
+  await page.click('[data-testid="asset-preload-management"] summary');
+  await page.waitForFunction(() => document.querySelector('[data-testid="asset-preload-index"]')?.textContent.includes('3'));
+  assert.match(await page.$eval('[data-testid="asset-preload-index"]', (el) => el.textContent), /尚未核实/);
+  await page.click('[data-testid="asset-preload-verify"]');
+  await page.waitForSelector('[data-testid="asset-preload-verified"]');
+  assert.match(await page.$eval('[data-testid="asset-preload-verified"]', (el) => el.textContent), /已校验当前版本 3 个文件/);
+  await assetPreloadScreenshots(page, 'management');
+  await page.click('[data-testid="asset-import-clear"]');
+  await page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 2);
+  assert.match(await page.$$eval('[role="dialog"]', (els) => els.at(-1).textContent), /HTTP 缓存不会被清除/);
+  await page.$$eval('[role="dialog"]', (els) => [...els.at(-1).querySelectorAll('button')].find((button) => button.textContent.includes('确认清除')).click());
+  await page.waitForFunction(() => document.querySelector('[data-testid="asset-preload-note"]')?.textContent.includes('已清除可管理'));
+  assert.equal(await page.evaluate(async () => (await import('/js/assetCache.js')).countImportedFiles()), 0);
+
+  const insecureContext = await browser.createBrowserContext();
+  const insecure = await insecureContext.newPage();
+  const lanAddress = Object.values(os.networkInterfaces()).flat().find((entry) => entry.family === 'IPv4' && !entry.internal)?.address;
+  if (!lanAddress) await insecure.evaluateOnNewDocument(() => Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false }));
+  await insecure.goto(lanAddress ? `http://${lanAddress}:${srv.port}` : baseUrl);
+  assert.equal(await insecure.evaluate(() => isSecureContext), false);
+  assert.equal(await insecure.evaluate(() => !!navigator.serviceWorker?.controller), false, 'LAN fallback has no controlling Service Worker');
+  await insecure.waitForSelector('[data-testid="asset-preload"]');
+  await insecure.click('[data-testid="asset-preload"]');
   await insecure.waitForSelector('[data-testid="asset-import-unavailable"]');
   const reason = await insecure.$eval('[data-testid="asset-import-unavailable"]', (el) => el.textContent);
-  assert.match(reason, /HTTPS/);
+  assert.match(reason, /HTTP/);
+  assert.equal(await insecure.$eval('[data-testid="asset-source-import"]', (button) => button.disabled), true);
+  assert.equal(await insecure.$eval('[data-testid="asset-source-github"]', (button) => button.disabled), false,
+    'GitHub can automatically select the supported server fallback on HTTP LAN');
   assert.equal(await insecure.$('[data-testid="asset-import-folder"]'), null);
+  await insecure.locator('[data-testid="asset-source-github"]').click();
+  await insecure.waitForSelector('[data-testid="asset-preload-fallback"]');
+  assert.match(await insecure.$eval('[data-testid="asset-preload-fallback"]', (el) => el.textContent), /已自动切换为服务器预载/);
+  await insecure.waitForFunction(() => document.querySelector('[data-testid="asset-download-status"]')?.textContent.includes('1 个素材下载失败'));
+  assert.equal(await insecure.evaluate(async () => (await import('/js/assetDownload.js')).assetDownload.get().done), 3,
+    'ordinary HTTP LAN can preload from the server without a Service Worker');
   assert.deepEqual(errors, []);
 });

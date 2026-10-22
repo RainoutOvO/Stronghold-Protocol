@@ -230,9 +230,8 @@
   background: linear-gradient(90deg, var(--mint-500), transparent 60%);
 }
 .title-login .btn--xl { letter-spacing: .6em; padding-left: calc(.48rem + .3em); }
-/* 下载完整素材 and 导入素材包 side by side under the login box (ui/assetDownload.js, ui/assetImport.js), each with its hint line;
-   a label too long for its half (a larger 文字大小) wraps inside its button instead of spilling over the other one */
-.title-assets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .12rem; width: 4.9rem; margin-top: .12rem; text-align: center; }
+/* Unified resource preload under the login box; the modal uses the existing mint/bracket theme. */
+.title-assets { display: grid; width: 4.9rem; margin-top: .12rem; text-align: center; }
 .title-assets__item { min-width: 0; }
 /* (`>`: the dialogs render inside the items — their buttons keep the shared sizes) */
 .title-assets__item > .btn { height: auto; min-height: .36rem; padding-top: .04rem; padding-bottom: .04rem; white-space: normal; line-height: 1.15; }
@@ -263,6 +262,29 @@
   border: 0;
 }
 .asset-import__reason { color: var(--text-lo); }
+.asset-preload { text-align: left; }
+.asset-preload p { margin: .12rem 0; line-height: 1.6; overflow-wrap: anywhere; }
+.asset-preload__sources { display: grid; gap: .12rem; }
+.asset-preload__sources > .btn { height: auto; min-height: .48rem; white-space: normal; justify-content: space-between; gap: .12rem; }
+.asset-preload__sources > .btn > .btn__label { display: flex; align-items: center; justify-content: space-between; gap: .12rem; width: 100%; }
+.asset-preload__sources > p { margin: 0; font-size: calc(.13 * var(--t)); }
+.asset-preload__availability { min-height: .62rem; }
+.asset-preload__recommendation-slot { flex: none; min-width: max(32px, .48rem); }
+.asset-preload__recommended { flex: none; border: 1px solid var(--mint-500); padding: .01rem .06rem; color: var(--mint-500); font-size: max(11px, calc(.12 * var(--t))); }
+.asset-preload__management { margin-top: .18rem; padding-top: .12rem; border-top: 1px solid var(--line); font-size: calc(.14 * var(--t)); }
+.asset-preload summary { cursor: pointer; color: var(--text-md); }
+/* devices.css expands coarse-pointer hit areas to 44px. Keep the visible controls at least that large so adjacent
+   source/management buttons cannot cover one another's centres on a scaled title screen. */
+.asset-preload .btn { max-width: 100%; height: auto; min-height: 44px; min-width: 44px; font-size: max(13px, calc(.16 * var(--t))); white-space: normal; }
+.asset-preload p, .asset-preload summary { font-size: max(12px, calc(.14 * var(--t))); }
+.asset-preload .modal__title { font-size: max(18px, calc(.26 * var(--t))); }
+.asset-preload .pbar__meta { font-size: max(12px, calc(.14 * var(--t))); }
+.asset-preload summary { min-height: 44px; padding: .06rem 0; }
+.asset-preload code { font-size: max(11px, calc(.13 * var(--t))); }
+.asset-preload .modal__actions, .asset-preload .asset-import__row { flex-wrap: wrap; }
+.asset-preload__advanced { margin: .12rem 0; font-size: max(12px, calc(.14 * var(--t))); }
+.asset-preload__advanced label { display: flex; align-items: center; min-height: 44px; gap: .08rem; padding: .06rem 0; cursor: pointer; }
+.asset-preload__advanced select { min-height: 44px; min-width: 0; max-width: 100%; flex: 1; padding: 0 .08rem; background: #0a0d0c; border: 1px solid var(--line); color: var(--text-hi); font: inherit; }
 .title-invite {
   display: flex;
   align-items: center;

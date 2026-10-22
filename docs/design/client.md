@@ -302,14 +302,43 @@ Audio: autochess BGM per phase, UI SFX (buy/sell/refresh/level/merge/ready/timer
 
 ## 13. Local-client art (optional, host-side)
 
-Title-screen asset download (downstream request, 2026-10-14, PR #628): **下载完整素材** explicitly predownloads the server's
-manifest-listed models, textures, audio and optional local art into the browser's HTTP cache. Show file progress,
-bytes read, pause/resume and failed-file retry. Do not mark completion until every listed response is fully read;
-missing server files remain visible failures. Closing the dialog pauses the queue. Cache eviction and refreshes
-do not retain a permanent completion flag. The same dialog can import a local folder or zip. Only bytes whose
-SHA-256 matches the served manifest are kept (a Spine model only as a whole group). They are stored in Cache
-Storage and served by `public/sw.js` for hashed `/assets/`, `/fonts/` and `/media/` URLs alone. Import requires
-HTTPS or localhost. Files already imported are not requested again. See [ASSETS.md](../ASSETS.md#player-initiated-predownload).
+Title-screen asset preload (PR #628's download, unified by downstream request 2026-10-21): one **资源预载** entry opens
+one dialog with three name-only source choices, server / GitHub / manual import. Opening never transfers asset or ZIP
+bodies. The owner can mark a source recommended (`SP_ASSET_PRELOAD_RECOMMENDED`, default GitHub); capability limits
+still disable an unusable source and explain the limit. The backdrop never closes it. Esc, close and changing source
+stop active work first: pause server download, cancel import or verification, and retain completed writes.
+
+Selecting server preload starts the existing bounded queue into the browser's HTTP cache, with file progress,
+bytes read, pause/resume, recheck and failed-file retry. A listed response must be completely read before success;
+missing server files remain failures. Ordinary HTTP LAN deployment needs no service worker or HTTPS. Cache eviction,
+refresh and reopening never turn a historical completion flag into proof that every file remains cached.
+
+GitHub is one automatic task: discover the actual public full-game Release ZIP, verify existing cache first,
+read needed ZIP ranges, parse/decompress with the existing importer, check CRC/content hashes and whole Spine groups,
+then save only matching files under the existing hashed cache URLs. No native-download handoff or extra file choice.
+Completion requires fresh current-manifest verification and the game's controlling service worker. Missing/version-
+mismatched/non-public files stay partial and can be supplemented from the server. Closing pauses requests and retains
+saved files; reopening does not download. On insecure LAN HTTP GitHub transparently falls back to real server preload,
+with its actual source shown. Manual import still explains and disables unavailable browser capabilities.
+
+Trusted visitor-country CN prefers ghfast, other/unknown prefers direct; always-direct and trusted custom-mirror
+preferences override auto routing. No implicit IP-query service or locale/time-zone/server-location inference is used.
+An optional country header requires an owner-configured proxy that overwrites it. Public readable CORS is preferred;
+otherwise a bounded same-origin relay accepts only the fixed discovered public ZIP and owner-configured mirror IDs.
+HTTPS/public DNS pinning, strict redirects, no forwarded credentials, concurrency/rate/byte/deadline limits apply.
+If upstream ignores Range it streams to bounded temporary disk and shares that preparation, rather than buffering the
+archive in RAM. The owner can disable this bandwidth-consuming relay. Site CSP lists exact download origins; worker
+policy stays unchanged. See [DEPLOY](../DEPLOY.md#25-玩家资源预载服务器预载支持普通-http) and the
+[source audit](../research/unified-asset-preload.md) for limits and actual network/browser evidence.
+
+Local ZIP, directory and drop import reuse sliced reads and existing manifest validation. Only SHA-256-matching
+bytes are stored (a Spine model only as a whole group) in the existing Cache Storage, served by `public/sw.js` for
+hashed `/assets/`, `/fonts/` and `/media/` URLs alone. Import requires HTTPS or localhost. Reusable imported files skip
+server requests and repeat writes; Range audio stays on the existing network path. Management labels the inexpensive
+index count as unverified and the origin estimate as whole-site usage. Explicit verification hashes current cache
+bodies, checks model groups, repairs index/audio aliases, and reports verified canonical count and logical bytes.
+Recheck supplements current server assets. Confirmed clear/prune deletes only manageable imported Cache Storage,
+never promises to enumerate or delete HTTP cache. See [ASSETS.md](../ASSETS.md#player-initiated-predownload).
 
 `tools/local-extract/extract.py` (Python: UnityPy + lz4 + Pillow; decodes Arknights' custom **LZ4AK** bundle compression via `aklz4.py`) extracts the art the web download does not include (some of it, most official HUD sprites among it, is on the public mirror too — §22.5) from a locally installed client (CrossOver Windows build or PlayCover iOS build) into `public/assets/local/**` and writes `data/local-assets.json` (`{ groups: { '<subdir>': { name: { path, w, h, kind } } } }`). Everything here is **optional**: clients must render correctly when the file or any entry is missing (fall back to the web assets / procedural art). The emotes and the guide pages below are on the public mirror too (§22.5): fetch-assets downloads them (data/assets.json `ui['emoticon/<dir>/<picId>']`, `ui['guide/<key>']`) and the client shows the local copy first, then that one (`data.js artUrls`); docs/DEPLOY.md §6 lists what still needs the client.
 - `map/autochess/TX_autochessi_*` — the real autochess board atlas (`_D` diffuse 2048² with floor tiles, gold-framed high-ground plates, REINFORCEMENTS bench pads, EQUIPMENTS pads, crates, gates; `_N/_M/_E` normal/mask/emission; `common_D` device icons; `BG` backdrop). `map/autochesssand/*` — the textures and materials of the sand theme (the theme of nine of the eleven battlefield scenes, §15).

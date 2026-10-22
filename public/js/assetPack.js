@@ -17,7 +17,8 @@
 
 import { splitHashedPath } from '../../shared/assetPaths.js';
 import { mediaUrl } from './media.js';
-import { IMPORTED_ASSET_CACHE, addImportedPaths, putImportedAsset, pruneImportedPaths } from './assetCache.js';
+import { IMPORTED_ASSET_CACHE, addImportedPaths, listImportedPaths, putImportedAsset, pruneImportedPaths,
+  writeImportedPaths } from './assetCache.js';
 
 export const MAX_ZIP_ENTRIES = 500_000;
 export const MAX_ENTRY_BYTES = 256 * 1024 * 1024;
@@ -113,6 +114,12 @@ function zip64Extra(extra, need) {
  * @param {Blob | ArrayBuffer | Uint8Array} data
  */
 async function zipSource(data) {
+  // Explicit random-access protocol used by the GitHub reader. Never fall through to a remote object's whole-file
+  // arrayBuffer(): a release archive can be much larger than the browser's memory budget.
+  if (data?.type === 'asset-archive' && Number.isSafeInteger(data.size) && data.size >= 0
+    && typeof data.read === 'function' && typeof data.part === 'function') {
+    return { size: data.size, read: data.read, part: data.part, copies: true };
+  }
   if (data && typeof data.slice === 'function' && typeof data.arrayBuffer === 'function' && typeof data.stream === 'function'
     && Number.isFinite(data.size)) {
     return {
@@ -234,13 +241,27 @@ async function readDirectory(src) {
 }
 
 /** Inflate raw deflate data: bytes, or a Blob slice streamed as it is read. */
-async function inflateRaw(comp) {
+async function inflateRaw(comp, limit = MAX_ENTRY_BYTES) {
   const Stream = globalThis.DecompressionStream;
   if (typeof Stream !== 'function') return null;
   try {
     const blob = typeof comp?.stream === 'function' ? comp : new Blob([comp]);
-    const stream = blob.stream().pipeThrough(new Stream('deflate-raw'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    const reader = blob.stream().pipeThrough(new Stream('deflate-raw')).getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > limit) { await reader.cancel(); return null; }
+        chunks.push(next.value);
+      }
+    } finally { reader.releaseLock(); }
+    const result = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+    return result;
   } catch {
     return null;
   }
@@ -270,10 +291,10 @@ async function readEntry(src, entry) {
     const comp = await src.read(dataStart, entry.compSize);
     raw = src.copies ? comp : comp.slice();
   } else {
-    raw = await inflateRaw(src.part ? src.part(dataStart, entry.compSize) : await src.read(dataStart, entry.compSize));
+    raw = await inflateRaw(src.part ? src.part(dataStart, entry.compSize) : await src.read(dataStart, entry.compSize), entry.uncompSize);
     if (!raw || raw.byteLength !== entry.uncompSize) return { ok: false, code: 'bad-entry' };
   }
-  if (entry.crc !== 0 && crc32(raw) !== entry.crc) return { ok: false, code: 'bad-entry' };
+  if (crc32(raw) !== entry.crc) return { ok: false, code: 'bad-entry' };
   return { ok: true, bytes: raw };
 }
 
@@ -401,13 +422,15 @@ export function planFromManifests(assets, local) {
 
 /**
  * The local groups of /data/local-assets.json and /data/local-fx.json (the official battle effects, DESIGN §33) as one
- * `{ groups }` manifest: their group names never overlap (fx groups are `fx…`); null when the host has neither.
+ * manifest: their group names never overlap (fx groups are `fx…`); null when the host has neither. Preserve local
+ * operator records as well: the server uses their skeleton/atlas/pages order when hashing a local Spine group.
  * @param {object | null} local
  * @param {object | null} fx
  */
 export function mergeLocalManifests(local, fx) {
   if (!local && !fx) return null;
-  return { groups: { ...((local && local.groups) || {}), ...((fx && fx.groups) || {}) } };
+  return { ...(isObj(local?.chars) ? { chars: local.chars } : {}),
+    groups: { ...((local && local.groups) || {}), ...((fx && fx.groups) || {}) } };
 }
 
 function planFrom(assets, local) {
@@ -468,14 +491,17 @@ function planFrom(assets, local) {
     const groupsDoc = local.groups;
     const rest = { ...local };
     delete rest.groups;
-    walkPlain(rest);
+    walkAssets(rest);
     if (isObj(groupsDoc)) {
       for (const [name, entries] of Object.entries(groupsDoc)) {
         if (name.startsWith('spine/') && isObj(entries)) {
           const names = Object.keys(entries)
             .filter((key) => isObj(entries[key]) && typeof entries[key].path === 'string')
             .sort();
-          if (names.length) considerSpine(names.map((key) => entries[key].path));
+          const [, kind, id, face] = name.split('/');
+          const operator = kind === 'char' ? local.chars?.[id]?.spine?.[face] : null;
+          // Match assetViews.js: local operators also name the model in chars, in skeleton/atlas/pages order.
+          if (names.length) considerSpine(isSpine(operator) ? spineMemberUrls(operator) : names.map((key) => entries[key].path));
           for (const [key, entry] of Object.entries(entries)) {
             if (names.includes(key)) {
               for (const [field, child] of Object.entries(entry)) if (field !== 'path') walkPlain(child);
@@ -495,8 +521,8 @@ function planFrom(assets, local) {
  * One served manifest: null for a 404 of an optional one, else its JSON; any other answer throws `{ code: 'manifest' }`
  * (an HTML page instead of JSON included — a proxy's error page must never read as an empty manifest).
  */
-async function readServedManifest(doFetch, url, optional) {
-  const response = await doFetch(url, { cache: 'no-store' });
+async function readServedManifest(doFetch, url, optional, signal) {
+  const response = await doFetch(url, { cache: 'no-store', ...(signal ? { signal } : {}) });
   if (optional && response.status === 404) {
     await response.body?.cancel?.();
     return null;
@@ -515,10 +541,10 @@ async function readServedManifest(doFetch, url, optional) {
 }
 
 /** The three served manifests an import reads (/data/assets.json, and local-assets / local-fx when the host has them). */
-async function readServedManifests(doFetch) {
-  const assets = await readServedManifest(doFetch, '/data/assets.json', false);
-  const local = await readServedManifest(doFetch, '/data/local-assets.json', true);
-  const fx = await readServedManifest(doFetch, '/data/local-fx.json', true);
+async function readServedManifests(doFetch, signal) {
+  const assets = await readServedManifest(doFetch, '/data/assets.json', false, signal);
+  const local = await readServedManifest(doFetch, '/data/local-assets.json', true, signal);
+  const fx = await readServedManifest(doFetch, '/data/local-fx.json', true, signal);
   const badLocal = (m) => m !== null && (!m || typeof m !== 'object' || Array.isArray(m) || !m.groups);
   if (!assets || typeof assets !== 'object' || Array.isArray(assets) || badLocal(local) || badLocal(fx)) {
     throw Object.assign(new Error('manifest'), { code: 'manifest' });
@@ -548,6 +574,145 @@ export function importedKeepSet(assets, local, fx) {
 export async function pruneImportedAssets({ fetch: doFetch = (...args) => globalThis.fetch(...args), caches: cachesApi = globalThis.caches } = {}) {
   const { assets, local, fx } = await readServedManifests(doFetch);
   return pruneImportedPaths(importedKeepSet(assets, local, fx), cachesApi);
+}
+
+/**
+ * Explicitly verify current imported bytes and repair their index. Merely opening a dialog reads only the index;
+ * this slower operation visits current manifest URLs, one body at a time, retaining hashes/sizes rather than bodies.
+ * A model is trusted only after all member hashes combine to its served model hash. Old-version entries remain for
+ * the existing prune operation. A failed repair/index write throws: callers must not display a successful check.
+ */
+export async function verifyImportedAssets({ fetch: doFetch = (...args) => globalThis.fetch(...args),
+  caches: cachesApi = globalThis.caches, signal, onProgress, includePaths = false } = {}) {
+  const abort = () => { if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); };
+  abort();
+  const { assets, local, fx } = await readServedManifests(doFetch, signal);
+  abort();
+  if (!cachesApi?.open) throw Object.assign(new Error('storage'), { code: 'storage' });
+  const cache = await cachesApi.open(IMPORTED_ASSET_CACHE);
+  const indexed = await listImportedPaths(cachesApi);
+  const plan = planFromManifests(assets, mergeLocalManifests(local, fx));
+  const checked = new Map(), valid = new Map(), acceptedPaths = new Set(), pendingDiscards = new Map();
+  const missing = new Set(), invalid = new Set();
+  let lastNotice = 0;
+  const report = (force = false) => {
+    if (onProgress && (force || Date.now() - lastNotice >= 100)) {
+      lastNotice = Date.now();
+      onProgress({ checkedFiles: checked.size, verifiedFiles: valid.size });
+    }
+  };
+  const read = async (url) => {
+    abort();
+    if (checked.has(url)) return checked.get(url);
+    const hit = await cache.match(url);
+    let result = { kind: 'missing' };
+    if (hit) {
+      result = { kind: 'invalid' };
+      const length = Number(hit.headers.get('content-length'));
+      if (hit.status === 200 && !/text\/html/i.test(hit.headers.get('content-type') || '') && length <= MAX_ENTRY_BYTES) {
+        const reader = hit.body?.getReader?.();
+        const cancelRead = () => { void reader?.cancel().catch(() => {}); };
+        signal?.addEventListener('abort', cancelRead, { once: true });
+        if (signal?.aborted) cancelRead();
+        const chunks = [];
+        let size = 0;
+        try {
+          if (reader) {
+            for (;;) {
+              abort();
+              const next = await reader.read();
+              if (next.done) break;
+              size += next.value.byteLength;
+              if (size > MAX_ENTRY_BYTES) { await reader.cancel(); break; }
+              chunks.push(next.value);
+            }
+          } else {
+            const bytes = new Uint8Array(await hit.arrayBuffer());
+            size = bytes.byteLength;
+            if (size <= MAX_ENTRY_BYTES) chunks.push(bytes);
+          }
+          abort();
+          if (size > 0 && size <= MAX_ENTRY_BYTES) {
+            const bytes = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+            result = { kind: 'read', hash: await sha256Hex16(bytes), size };
+          }
+        } finally {
+          signal?.removeEventListener('abort', cancelRead);
+          reader?.releaseLock();
+        }
+      } else await hit.body?.cancel?.();
+    }
+    checked.set(url, result);
+    report();
+    return result;
+  };
+  const discard = async (url, result) => {
+    valid.delete(url);
+    indexed.delete(url);
+    if (result.kind === 'missing') missing.add(url);
+    else {
+      invalid.add(url);
+      // A false result can mean a concurrent eviction. An extant entry after a failed deletion is a storage error.
+      if (!(await cache.delete(url)) && await cache.match(url)) throw Object.assign(new Error('storage'), { code: 'storage' });
+    }
+  };
+  const accept = async (url, result) => {
+    valid.set(url, result.size);
+    acceptedPaths.add(url);
+    indexed.add(url);
+    // Audio playback requests /media, not /assets. Verify that alias too, repairing it from already verified bytes.
+    for (const alias of cacheUrlsFor(url).slice(1)) {
+      const aliased = await read(alias);
+      if (aliased.kind !== 'read' || aliased.hash !== result.hash) {
+        abort();
+        const source = await cache.match(url);
+        if (!source) throw Object.assign(new Error('storage'), { code: 'storage' });
+        await cache.put(alias, source);
+      }
+      indexed.add(alias);
+      acceptedPaths.add(alias);
+    }
+  };
+  for (const spec of plan.files.values()) {
+    for (const file of [spec, ...spec.alts]) {
+      const result = await read(file.url);
+      if (result.kind === 'read' && result.hash === file.hash) await accept(file.url, result);
+      else {
+        pendingDiscards.set(file.url, result);
+        for (const alias of cacheUrlsFor(file.url).slice(1)) {
+          const aliased = await read(alias);
+          pendingDiscards.set(alias, aliased);
+        }
+      }
+    }
+  }
+  for (const group of plan.groups) {
+    const results = [];
+    for (const member of group.members) results.push(await read(member.url));
+    const good = results.every((result) => result.kind === 'read')
+      && await modelHashOf(results.map((result) => result.hash)) === group.hash;
+    const incomplete = results.some((result) => result.kind === 'missing');
+    for (let i = 0; i < group.members.length; i++) {
+      const url = group.members[i].url, result = results[i];
+      if (good) await accept(url, result);
+      // A paused import may have saved only some already-verified members. Preserve those bytes so a later server
+      // check can fill the missing files; the incomplete group contributes nothing to the verified file count.
+      else if (incomplete && result.kind === 'read') indexed.add(url);
+      else pendingDiscards.set(url, result);
+    }
+  }
+  // One URL can appear both as a model member and in another manifest field. Its complete model verification wins;
+  // never delete it before every expected hash interpretation has been checked.
+  for (const [url, result] of pendingDiscards) if (!acceptedPaths.has(url)) await discard(url, result);
+  abort();
+  await writeImportedPaths(cache, indexed);
+  report(true);
+  const canonical = (url) => url.startsWith('/assets/') || url.startsWith('/fonts/');
+  return { verifiedFiles: valid.size, logicalBytes: [...valid.values()].reduce((sum, size) => sum + size, 0),
+    missingFiles: [...missing].filter(canonical).length, invalidFiles: [...invalid].filter(canonical).length,
+    indexedFiles: [...indexed].filter(canonical).length, ...(includePaths ? { verifiedPaths: [...acceptedPaths] } : {}) };
 }
 
 /** The cache keys of one served URL: itself, plus the `/media/~hash/…` alias when playback would request it. */
@@ -592,6 +757,7 @@ export function createAssetImport({
   let unsupported = 0;
   let cancelFlag = false;
   let running = null;
+  let controller = null;
   let lastNotice = 0;
   const listeners = new Set();
 
@@ -619,7 +785,7 @@ export function createAssetImport({
     publish();
   };
 
-  const readManifest = (url, optional) => readServedManifest(doFetch, url, optional);
+  const readManifest = (url, optional) => readServedManifest(doFetch, url, optional, controller?.signal);
 
   async function loadZip(data) {
     const zip = await openZip(data);
@@ -728,18 +894,38 @@ export function createAssetImport({
       };
 
       const store = async (urls, bytes) => {
-        if (!cache) {
-          if (!cachesApi?.open) throw Object.assign(new Error('cache'), { code: 'unknown' });
-          cache = await cachesApi.open(IMPORTED_ASSET_CACHE);
+        try {
+          if (!cache) {
+            if (!cachesApi?.open) throw new Error('storage');
+            cache = await cachesApi.open(IMPORTED_ASSET_CACHE);
+          }
+          await putImportedAsset(cache, urls, bytes);
+        } catch (cause) {
+          throw Object.assign(new Error('storage', { cause }), { code: 'storage' });
         }
-        await putImportedAsset(cache, urls, bytes);
         for (const url of urls) {
           try { storedPaths.add(new URL(url, 'http://localhost').pathname); } catch { /* not a URL: never stored */ }
         }
       };
+      const reusable = async (url) => {
+        if (!source?.skipUrls?.has?.(url)) return false;
+        if (!cache) cache = await cachesApi.open(IMPORTED_ASSET_CACHE);
+        for (const key of cacheUrlsFor(url)) {
+          const hit = await cache.match(key);
+          if (!hit || hit.status !== 200) { await hit?.body?.cancel?.(); return false; }
+          await hit.body?.cancel?.();
+        }
+        return true;
+      };
 
       for (const group of plan.groups) {
         if (cancelFlag) break;
+        let reuse = true;
+        for (const member of group.members) if (!(await reusable(member.url))) { reuse = false; break; }
+        if (reuse) {
+          for (const member of group.members) if (packByRel.has(member.rel)) settle(member.rel, 'accepted');
+          continue;
+        }
         const present = group.members.filter((member) => packByRel.has(member.rel));
         if (present.length !== group.members.length) {
           for (const member of present) {
@@ -767,6 +953,7 @@ export function createAssetImport({
             else if (!got) settle(member.rel, 'skipped');
             else settle(member.rel, 'skipped');
           }
+          for (const member of group.members) reads.delete(member.rel);
           continue;
         }
         const hashes = [];
@@ -795,11 +982,14 @@ export function createAssetImport({
             if (spineOnly.has(member.rel)) settle(member.rel, 'rejected');
           }
         }
+        // A rejected group must not retain every model's bytes for the rest of a large import.
+        for (const member of group.members) reads.delete(member.rel);
       }
 
       for (const [rel, spec] of plan.files) {
         if (cancelFlag) break;
         if (outcome.has(rel) || !packByRel.has(rel)) continue;
+        if (await reusable(spec.url)) { settle(rel, 'accepted'); continue; }
         const got = await readRel(rel);
         if (cancelFlag) break;
         if (!got?.ok || !got.bytes?.byteLength) {
@@ -830,12 +1020,15 @@ export function createAssetImport({
       if (cancelFlag) phase = 'cancelled';
       else {
         phase = 'error';
-        error = cause?.code === 'bad-zip' || cause?.code === 'manifest' ? cause.code : 'unknown';
+        error = cause?.name === 'QuotaExceededError' || cause?.code === 'storage' ? 'storage'
+          : cause?.code === 'bad-zip' || cause?.code === 'manifest' ? cause.code : 'unknown';
       }
     } finally {
       // before the end is published: the dialog's count and the download queue read the index as the import ends
       if (cache && storedPaths.size) {
-        try { await addImportedPaths(cache, storedPaths); } catch { /* the entries stay; Cache.keys() may still list them */ }
+        try { await addImportedPaths(cache, storedPaths); } catch {
+          phase = 'error'; error = 'storage';
+        }
       }
       publish(true);
     }
@@ -850,10 +1043,14 @@ export function createAssetImport({
     start(source) {
       if (running) return running;
       cancelFlag = false;
-      running = run(source).finally(() => { running = null; });
+      controller = new AbortController();
+      const cancelled = () => { cancelFlag = true; controller.abort(); };
+      source?.signal?.addEventListener('abort', cancelled, { once: true });
+      if (source?.signal?.aborted) cancelled();
+      running = run(source).finally(() => { source?.signal?.removeEventListener('abort', cancelled); running = null; });
       return running;
     },
-    cancel() { cancelFlag = true; },
+    cancel() { cancelFlag = true; controller?.abort(); return running || Promise.resolve(); },
   };
 }
 

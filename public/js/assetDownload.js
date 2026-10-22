@@ -2,7 +2,7 @@
 // never decode every model/image/audio file into RAM or persist an unverified "complete" flag.
 // A URL already stored by a local import (assetPack.js) is marked done and not requested again.
 import { mediaUrl } from './media.js';
-import { listImportedPaths } from './assetCache.js';
+import { openImportedAssetLookup } from './assetCache.js';
 
 /**
  * Collect only same-origin art files, including all Spine pages and optional local scenes.
@@ -17,6 +17,11 @@ export function collectAssetUrls(...manifests) {
     if (typeof value === 'string') {
       if (/^\/(?:assets|fonts)\/[^/]/.test(value) && !/[?#\\]/.test(value)) urls.add(mediaUrl(value));
     } else if (value && typeof value === 'object') {
+      // The renderer/server also use <skel>.png when a model omits its texture list.
+      if (typeof value.skel === 'string' && /\.skel$/.test(value.skel)
+        && !(Array.isArray(value.textures) && value.textures.some((page) => typeof page === 'string' && page))) {
+        visit(value.skel.replace(/\.skel$/, '.png'));
+      }
       for (const child of Object.values(value)) visit(child);
     }
   };
@@ -27,10 +32,11 @@ export function collectAssetUrls(...manifests) {
 
 /** A bounded, pausable download queue. A file counts only after its entire body arrives. */
 export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.fetch(...args),
-  concurrency = 4, timeoutMs = 60000, retries = 2, lookupImported = listImportedPaths } = {}) {
+  concurrency = 4, timeoutMs = 60000, retries = 2, lookupImported = openImportedAssetLookup } = {}) {
   let state = { phase: 'idle', total: 0, done: 0, bytes: 0, failures: [], localMissing: false, cached: 0 };
-  let urls = null, running = null, controller = null, paused = false, lastNotice = 0;
-  const complete = new Set(), failures = new Map(), listeners = new Set();
+  let urls = null, running = null, controller = null, paused = false, lastNotice = 0, pendingStart = null, resetRequested = false;
+  let resumeGeneration = 0;
+  const complete = new Set(), importedComplete = new Set(), failures = new Map(), listeners = new Set();
   const emit = (force = false) => {
     if (!force && Date.now() - lastNotice < 100) return;
     lastNotice = Date.now();
@@ -112,18 +118,10 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
       let imported = null;
       try { imported = await lookupImported(); } catch { imported = null; }
       if (paused) return;
-      let cached = 0;
-      if (imported && typeof imported.has === 'function') {
-        for (const url of urls) {
-          let path = url;
-          try { path = new URL(url, 'http://localhost').pathname; } catch { /* keep the queue string */ }
-          if (imported.has(url) || imported.has(path)) {
-            cached++;
-            complete.add(url);
-          }
-        }
-      }
-      state = { ...state, cached };
+      // Eviction, clearing and pruning may remove a previous imported hit. Never carry that assumption across runs.
+      for (const url of importedComplete) complete.delete(url);
+      importedComplete.clear();
+      state = { ...state, cached: 0 };
       if (paused) return;
       state = { ...state, phase: 'downloading' };
       failures.clear();
@@ -134,7 +132,13 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
         while (!paused && next < queue.length) {
           const url = queue[next++];
           try {
-            await request(url);
+            let hit = false;
+            try { hit = !!(await imported?.has?.(url)); } catch { /* fall back to the normal HTTP request */ }
+            if (paused) break;
+            if (hit) {
+              importedComplete.add(url);
+              state = { ...state, cached: state.cached + 1 };
+            } else await request(url);
             complete.add(url);
           } catch (error) {
             if (!paused) failures.set(url, { url, status: error.status || 'network' });
@@ -152,23 +156,46 @@ export function createAssetDownload({ fetch: doFetch = (...args) => globalThis.f
     }
   }
 
-  return {
+  function reset() {
+    urls = null; complete.clear(); importedComplete.clear(); failures.clear();
+    state = { phase: 'idle', total: 0, done: 0, bytes: 0, failures: [], localMissing: false, cached: 0 };
+    resetRequested = false;
+  }
+
+  const api = {
     get: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     start() {
-      if (running) return running;
+      if (running) {
+        if (!paused) return running;
+        // An immediate pause → resume waits for aborted workers to settle before giving them a new controller.
+        if (!pendingStart) {
+          const generation = ++resumeGeneration;
+          const pending = running.then(() => {
+            if (pendingStart === pending) pendingStart = null;
+            if (generation === resumeGeneration) return api.start();
+          });
+          pendingStart = pending;
+        }
+        return pendingStart;
+      }
       paused = false;
       controller = new AbortController();
       // A new check after completion revalidates the manifest and all files through the HTTP cache.
-      if (state.phase === 'complete') {
-        urls = null; complete.clear();
-        state = { phase: 'idle', total: 0, done: 0, bytes: 0, failures: [], localMissing: false, cached: 0 };
-      }
+      if (resetRequested || state.phase === 'complete') reset();
       running = run().finally(() => { running = null; });
       return running;
     },
-    pause() { if (running) { paused = true; controller.abort(); } },
+    pause() {
+      resumeGeneration++;
+      pendingStart = null;
+      if (running) { paused = true; controller.abort(); }
+      return running || Promise.resolve();
+    },
+    recheck() { resetRequested = true; api.pause(); return api.start(); },
+    async invalidate() { await api.pause(); reset(); emit(true); },
   };
+  return api;
 }
 
 export const assetDownload = createAssetDownload();

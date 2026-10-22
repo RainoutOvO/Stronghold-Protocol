@@ -677,7 +677,7 @@ export function ProgressBar({ value, max = 100, tone = 'mint', segments = 0, lab
       <span class="pbar__label">${label}</span>
       ${showValue ? html`<span class="pbar__value">${Math.round(v)}<small>/${Math.round(m)}</small></span>` : null}
     </div>` : null}
-    <div class="pbar__track" role="progressbar" aria-valuemin="0" aria-valuemax=${m} aria-valuenow=${v}
+    <div class="pbar__track" role="progressbar" aria-label=${typeof label === 'string' ? label : undefined} aria-valuemin="0" aria-valuemax=${m} aria-valuenow=${v}
          style=${segments > 1 ? `--segs:${segments}` : undefined}>
       <div class="pbar__fill" style=${`width:${pct}%`}></div>
       ${segments > 1 ? html`<div class="pbar__segs"></div>` : null}

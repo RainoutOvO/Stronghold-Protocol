@@ -40,7 +40,9 @@ import path from 'node:path';
 import { getData, loadData } from './data.js';
 import { getBotStrategy } from './match/botStrategies.js';
 import { externalConfig } from './match/externalConfig.js';
-import { ROOT, listenAddress, bindCandidates, serveDirs, makeLogger, parseTrustProxy, assetIndexOptionsFrom } from './http/config.js';
+import { ROOT, listenAddress, bindCandidates, serveDirs, makeLogger, parseTrustProxy, assetIndexOptionsFrom, assetPreloadRecommendation, assetPreloadCountryHeader, assetPreloadRelayOptions } from './http/config.js';
+import { createAssetRelay } from './http/assetRelay.js';
+import { getGithubRelease } from './http/assetRelease.js';
 import { WS_MAX_PAYLOAD, createSessionStack, attachWebSocket } from './http/websocket.js';
 import { siteCsp } from './http/csp.js';
 import { DATA_SHIM_JS, createStaticHandler } from './http/static.js';
@@ -80,6 +82,10 @@ export {
  *   maxConnectionsPerAddr?: number, maxRoomsPerAddr?: number, maxMatchesPerAddr?: number, resyncMinGapMs?: number,
  *   heavyPerSec?: number, heavyBurst?: number, trustProxy?: 'auto' | boolean, soloReconnectWindowMs?: number,
  *   assetIndex?: boolean | { cacheFile?: string | null, delayMs?: number }, studio?: boolean,
+ *   assetPreloadRecommended?: 'server' | 'github' | 'import',
+ *   assetPreloadCountryHeader?: string | null,
+ *   assetPreloadRelay?: boolean, assetPreloadMirrors?: object[], assetReleaseLookup?: Function,
+ *   assetRelayTransport?: Function, assetRelaySpoolDir?: string,
  *   matchHost?: object,
  * }} [opts]
  *   assetIndex: the content-hash index (default on; false or SP_ASSET_INDEX=0: off — config.js assetIndexOptionsFrom);
@@ -147,7 +153,11 @@ export async function startServer(opts = {}) {
   buildTag();
 
   const traffic = createTrafficCounter();
-  const server = http.createServer(createRequestHandler({ serveStatic, csp: process.env.SP_CSP === 'off' ? null : siteCsp(publicDir), health: { startedAt, network, registry, lobby, content, traffic, assetIndex, views, trusted:trustedRuntime?.health }, log, trustProxy: network.opts.trustProxy, studio, trustedRuntime }));
+  const githubRelease = opts.assetReleaseLookup || getGithubRelease;
+  const assetRelay = createAssetRelay({ ...assetPreloadRelayOptions(opts, log), lookupRelease: githubRelease,
+    transport: opts.assetRelayTransport, spoolDir: opts.assetRelaySpoolDir || path.join(ROOT, '.cache', 'asset-preload') });
+  const server = http.createServer(createRequestHandler({ serveStatic, csp: process.env.SP_CSP === 'off' ? null : siteCsp(publicDir, { assetPreloadOrigins: assetRelay.connectOrigins }), health: { startedAt, network, registry, lobby, content, traffic, assetIndex, views, trusted:trustedRuntime?.health }, log, trustProxy: network.opts.trustProxy, studio, trustedRuntime,
+    assetPreloadRecommended: assetPreloadRecommendation(opts, log), assetPreloadCountryHeader: assetPreloadCountryHeader(opts, log), githubRelease, assetRelay }));
   server.on('clientError', answerClientError);
   const wss = attachWebSocket(server, { network, log, traffic });
 
@@ -195,6 +205,7 @@ export async function startServer(opts = {}) {
     network.close(); // stop heartbeat/sweep timers of the half-built server
     assetIndex?.close();
     studio?.close();
+    await assetRelay.close();
     await trustedRuntime?.close();
     throw e;
   }
@@ -214,6 +225,7 @@ export async function startServer(opts = {}) {
       network.close();
       assetIndex?.close();
       studio?.close();
+      await assetRelay.close();
       await trustedRuntime?.close();
       await new Promise((resolve) => {
         server.close(() => resolve());

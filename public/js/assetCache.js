@@ -77,17 +77,48 @@ export function contentTypeFor(url) {
   return 'application/octet-stream';
 }
 
-/** Put one body at each URL. Each put gets its own copy: Cache Storage consumes the body. */
+/** Compare a previously stored body without allocating another whole file; the incoming bytes are already verified. */
+async function sameStoredBody(hit, body, type) {
+  if (!hit) return false;
+  if (hit.status !== 200 || hit.headers.get('content-type') !== type) {
+    await hit.body?.cancel?.();
+    return false;
+  }
+  const reader = hit.body?.getReader?.();
+  if (!reader) {
+    const prior = new Uint8Array(await hit.arrayBuffer());
+    return prior.length === body.length && prior.every((value, i) => value === body[i]);
+  }
+  let offset = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return offset === body.length;
+      if (offset + value.length > body.length) { await reader.cancel(); return false; }
+      for (let i = 0; i < value.length; i++) {
+        if (value[i] !== body[offset + i]) { await reader.cancel(); return false; }
+      }
+      offset += value.length;
+    }
+  } finally { reader.releaseLock(); }
+}
+
+/** Put verified bytes at each URL, reusing an equal stored body. Each write gets its own consumed copy. */
 export async function putImportedAsset(cache, urls, bytes, typeFor = contentTypeFor) {
   const body = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  await Promise.all([...urls].map((url) => {
+  const writes = await Promise.allSettled([...urls].map(async (url) => {
+    const type = typeFor(url);
+    if (await sameStoredBody(await cache.match(url), body, type)) return;
     const copy = body.slice();
     const response = new Response(copy, {
       status: 200,
-      headers: { 'Content-Type': typeFor(url) },
+      headers: { 'Content-Type': type, 'Content-Length': String(body.byteLength) },
     });
     return cache.put(url, response);
   }));
+  // If one alias fails, still wait for the others before a caller can close, clean up or start another import.
+  const failure = writes.find((result) => result.status === 'rejected');
+  if (failure) throw failure.reason;
 }
 
 function pathnameOf(url) {
@@ -138,6 +169,41 @@ export async function listImportedPaths(cachesApi = globalThis.caches) {
 }
 
 /**
+ * A lookup for the download queue, rather than a claim that every indexed entry still exists. Only our controlling
+ * worker can make these bytes available to the game's ordinary requests. A LAN HTTP page must use HTTP Cache even
+ * when a browser exposes Cache Storage, and a just-registered worker must first take control of the page.
+ * The index bounds the candidates; an exact match checks each candidate just before it is skipped.
+ */
+export async function openImportedAssetLookup({ caches: cachesApi = globalThis.caches, nav = globalThis.navigator,
+  secure = globalThis.isSecureContext, origin = globalThis.location?.origin } = {}) {
+  if (!secure || !cachesApi?.open || !importedWorkerControlsPage(nav, origin)) return null;
+  try {
+    const cache = await cachesApi.open(IMPORTED_ASSET_CACHE);
+    const indexed = (await readImportIndex(cache)) ?? await keyPaths(cache);
+    return {
+      async has(url) {
+        const path = pathnameOf(url);
+        if (!indexed.has(path) || !shouldServeImportedAsset(path, origin)) return false;
+        const hit = await cache.match(path);
+        if (!hit) return false;
+        const usable = hit.status === 200 && !/text\/html/i.test(hit.headers.get('content-type') || '');
+        await hit.body?.cancel?.();
+        return usable;
+      },
+    };
+  } catch { return null; }
+}
+
+/** Whether this page's ordinary asset requests are currently handled by our own worker. */
+export function importedWorkerControlsPage(nav = globalThis.navigator, origin = globalThis.location?.origin) {
+  if (!origin || !nav?.serviceWorker?.controller) return false;
+  try {
+    const worker = new URL(nav.serviceWorker.controller.scriptURL, origin);
+    return worker.origin === origin && worker.pathname === '/sw.js';
+  } catch { return false; }
+}
+
+/**
  * Add the pathnames an import stored to the index (assetPack.js, as an import ends — finished, cancelled or failed).
  * Without an index yet, the cache's keys seed it when Cache.keys() still answers.
  * @param {Cache} cache the open import cache
@@ -149,12 +215,18 @@ export async function addImportedPaths(cache, paths) {
     try { all = await keyPaths(cache); } catch { all = new Set(); }
   }
   for (const p of paths) if (typeof p === 'string' && p && p !== IMPORTED_INDEX_URL) all.add(p);
-  await cache.put(IMPORTED_INDEX_URL, new Response(JSON.stringify([...all].sort()), {
+  await writeImportedPaths(cache, all);
+}
+
+/** Replace the index after an explicit verification or cleanup; unlike addImportedPaths, stale paths leave it. */
+export async function writeImportedPaths(cache, paths) {
+  const safe = [...paths].filter((p) => typeof p === 'string' && IMPORTED_ASSET_PATH.test(p));
+  await cache.put(IMPORTED_INDEX_URL, new Response(JSON.stringify(safe.sort()), {
     status: 200, headers: { 'Content-Type': 'application/json' },
   }));
 }
 
-/** How many imported files are stored, counting /assets/ and /fonts/ only (not the /media/ alias). */
+/** Indexed file count (not a live verification), /assets/ and /fonts/ only; no /media/ alias. */
 export async function countImportedFiles(cachesApi = globalThis.caches) {
   const paths = await listImportedPaths(cachesApi);
   let n = 0;
@@ -177,11 +249,14 @@ export async function pruneImportedPaths(wanted, cachesApi = globalThis.caches) 
   const stored = (await readImportIndex(cache)) ?? await keyPaths(cache);
   const stale = [...stored].filter((p) => !wanted.has(p));
   const kept = [...stored].filter((p) => wanted.has(p));
-  let removed = 0, removedFiles = 0;
+  let removed = 0, removedFiles = 0, failed = false;
   for (let i = 0; i < stale.length; i += 32) {
     await Promise.all(stale.slice(i, i + 32).map(async (p) => {
       let gone;
-      try { gone = await cache.delete(p); } catch { kept.push(p); return; }
+      try {
+        gone = await cache.delete(p);
+        if (!gone && await cache.match(p)) { kept.push(p); failed = true; }
+      } catch { kept.push(p); failed = true; return; }
       if (!gone) return; // listed but absent: it leaves the index
       removed++;
       if (p.startsWith('/assets/') || p.startsWith('/fonts/')) removedFiles++;
@@ -190,6 +265,7 @@ export async function pruneImportedPaths(wanted, cachesApi = globalThis.caches) 
   await cache.put(IMPORTED_INDEX_URL, new Response(JSON.stringify(kept.sort()), {
     status: 200, headers: { 'Content-Type': 'application/json' },
   }));
+  if (failed) throw Object.assign(new Error('storage'), { code: 'storage' });
   return { removed, removedFiles, kept: kept.length };
 }
 
@@ -201,9 +277,10 @@ export async function clearImportedAssets(cachesApi = globalThis.caches) {
       const names = await cachesApi.keys();
       const ours = names.filter((name) => String(name).startsWith(IMPORTED_ASSET_CACHE_PREFIX));
       if (ours.length) {
-        await Promise.all(ours.map((name) => cachesApi.delete(name)));
-        return true;
+        const deleted = await Promise.allSettled(ours.map((name) => cachesApi.delete(name)));
+        return deleted.every((result) => result.status === 'fulfilled' && result.value);
       }
+      return true; // no managed cache exists
     }
     return await cachesApi.delete(IMPORTED_ASSET_CACHE);
   } catch {
