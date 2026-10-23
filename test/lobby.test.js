@@ -14,7 +14,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { startServer, parseRange, acceptsGzip, pickEncoding, parseTrustProxy } from '../server/index.js';
 import { loadData, lookup, getChess, getBond, getBand, getMode, getConfig, INDEXED_FILES } from '../server/data.js';
 import * as dataModule from '../server/data.js';
-import { CODE_ALPHABET, BOT_NAMES } from '../server/lobby.js';
+import { CODE_ALPHABET, BOT_NAMES, DEFAULT_DIFFICULTY } from '../server/lobby.js';
 import { sanitizeName, TokenBucket, SessionRegistry, clientAddress, normalizeIp, isLocalIp, limitKeyOf } from '../server/net.js';
 import { StubMatch as Match } from '../server/match/StubMatch.js';
 import { Match as RealMatch } from '../server/match/Match.js';
@@ -597,7 +597,8 @@ describe('websocket lobby', () => {
     }
     await expectError(c, { t: 'room.create', mode: 'pvp', difficulty: 'NORMAL' }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.create', mode: 'coop', difficulty: 'EASY' }, ERR.BAD_MSG);
-    await expectError(c, { t: 'room.create', mode: 'coop' }, ERR.BAD_MSG);
+    await expectError(c, { t: 'room.create', mode: 'coop', difficulty: null }, ERR.BAD_MSG);
+    await expectError(c, { t: 'room.create', difficulty: 'NORMAL' }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.join', code: 'AB CD' }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.join', code: { $gt: '' } }, ERR.BAD_MSG);
     await expectError(c, { t: 'room.ready', ready: 'yes' }, ERR.BAD_MSG);
@@ -721,6 +722,30 @@ describe('websocket lobby', () => {
     // last human leaving disposes the room
     await expectOk(guest, { t: 'room.leave' });
     await expectError(host, { t: 'room.join', code: own.code }, ERR.ROOM_NOT_FOUND);
+  });
+
+  test('room.create without a difficulty: the room starts at the default (标准 [ASSUMED]), the host changes it in the room', async () => {
+    // the event's 联合模拟 creates the room first and its creator changes the difficulty there (research 06 §3.2)
+    const host = await pool.player('Host');
+    const r = await host.request({ t: 'room.create', mode: 'coop' });
+    assert.equal(r.t, 'ok', JSON.stringify(r));
+    const st = await host.waitFor('room.state', (s) => s.hostId === host.id && s.mode === 'coop');
+    assert.equal(st.difficulty, DEFAULT_DIFFICULTY);
+    assert.equal(DEFAULT_DIFFICULTY, 'FUNNY');
+    const guest = await pool.player('Guest');
+    await joinRoom(guest, st.code);
+    await expectOk(guest, { t: 'room.ready', ready: true });
+    await host.waitFor('room.state', (s) => seatOf(s, guest.id)?.ready === true);
+    await expectError(guest, { t: 'room.setDifficulty', difficulty: 'HARD' }, ERR.NOT_HOST);
+    await expectOk(host, { t: 'room.setDifficulty', difficulty: 'HARD' });
+    const changed = await guest.waitFor('room.state', (s) => s.difficulty === 'HARD');
+    assert.equal(seatOf(changed, guest.id).ready, false, 'the change un-readies the guest');
+    const solo = await pool.player('Solo');
+    assert.equal((await solo.request({ t: 'room.create', mode: 'solo' })).t, 'ok');
+    assert.equal((await solo.waitFor('room.state', (s) => s.hostId === solo.id)).difficulty, DEFAULT_DIFFICULTY);
+    await expectOk(guest, { t: 'room.leave' });
+    await expectOk(host, { t: 'room.leave' });
+    await expectOk(solo, { t: 'room.leave' });
   });
 
   test('room full, solo rooms admit one human and no AI', async () => {
@@ -1249,6 +1274,7 @@ describe('websocket lobby', () => {
     assert.ok(h.rooms >= 1);
     assert.ok(h.sockets >= 1);
     assert.ok(h.sessions >= 1);
+    assert.equal(Object.hasOwn(h, 'versions'), false, 'only 第二期下半 enabled: no versions block (DESIGN §35.23)');
   });
 });
 

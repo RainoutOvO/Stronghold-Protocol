@@ -14,9 +14,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { unscaled } from '../helpers/uiSize.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const read = (p) => readFileSync(path.join(ROOT, p), 'utf8');
+const read = (p) => unscaled(readFileSync(path.join(ROOT, p), 'utf8'));
 
 const { GLYPHS, gearPath, GIcon } = await import('../../public/js/ui/gameComponents.js');
 const { hudBands, HUD_REM } = await import('../../public/js/ui/fieldHost.js');

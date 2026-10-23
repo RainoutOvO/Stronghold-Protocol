@@ -41,7 +41,7 @@ export class MatchRehearsal {
    * @returns {null | ReturnType<typeof createDelegatedRehearsalJob>} the job to drive, or null when the server should
    *   rehearse the candidates itself (delegation off, no host to ask, or the frame could not be sent)
    */
-  delegateRehearsal({ ps, chosen, plans, inputs }) {
+  delegateRehearsal({ ps, chosen, plans, inputs, cap = null }) {
     if (!this.botRehearsalDelegate || this.disposed || this.ended) return null;
     // A gameplay-plugin room (requireCs) runs in a match host on that room's content set. The host browser only has
     // the official data pack and must not load the room's scripts or spend a different script budget, so the server
@@ -54,7 +54,7 @@ export class MatchRehearsal {
     if (!ps.isBot) return null;
     const host = this.hostId ? this.players.get(this.hostId) : null;
     if (!host || host.isBot || host.left || !host.connected) return null;
-    const job = createDelegatedRehearsalJob(this, ps, chosen, plans, inputs);
+    const job = createDelegatedRehearsalJob(this, ps, chosen, plans, inputs, cap);
     const task = {
       // protocol ids are ≤ 64 chars (shared/protocol.js isId): prefix, round, seat and a per-match counter
       id: `${this.battlePrefix}.${this.round}.${ps.seat}.${++this._rehearsalSeq}`,
@@ -63,7 +63,7 @@ export class MatchRehearsal {
     // the candidates as the JSON the browser simulates — the same preview inputs the server would build, so both
     // sides compare the same battles. No `cs`: a missing hash means the official data. A spec that names a content
     // set is refused by the page (public/js/battle/rehearsal.js); plugin rooms never get here (requireCs above).
-    const specs = inputs.map((o) => buildBattleSpec({ ...o, content: this.battleContent, ...morphBattleOpt(this.rules) }));
+    const specs = inputs.map((o) => buildBattleSpec({ ...o, content: this.battleContent, ...morphBattleOpt(this.rules), version: this.data.config?.version?.id }));
     // registered (and timed) before the frame goes out: an answer can only name a task the server already holds, and one
     // that comes back with the frame itself cannot race the timeout being armed
     this._rehearsalTasks.set(task.id, task);

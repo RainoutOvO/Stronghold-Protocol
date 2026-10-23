@@ -35,11 +35,17 @@ export function httpDecision(config, observation, signal) {
 
 // [ASSUMED] One multiplexed, long-lived child per match; request IDs correlate concurrent seats.
 // Crash/protocol failure kills this child; next demand restarts after backoff (no idle restart loop).
+// §35.62: a cancelled request (the host dropped that decision) ends only that request; its late reply is
+// ignored by ID. The child is killed only for a protocol error, a crash, or a timeout with no reply at all
+// since the request was written (a real hang), so one slow seat cannot fail every other seat's request.
+const ABANDONED_CAP = 256;
 export class StdioAI {
   constructor(config) {
     this.config = config;
     this.child = null;
     this.pending = new Map();
+    this.abandoned = new Set();
+    this.replies = 0;
     this.retryAt = 0;
     this.closed = false;
   }
@@ -65,8 +71,12 @@ export class StdioAI {
         let reply;
         try { reply = JSON.parse(buffer.subarray(0, end).toString('utf8')); } catch { fail(); return; }
         buffer = buffer.subarray(end + 1);
+        this.replies++;
         const pending = this.pending.get(reply?.id);
-        if (!pending) { fail(); return; }
+        if (!pending) {
+          if (this.abandoned.delete(reply?.id)) continue;
+          fail(); return;
+        }
         pending.finish(null, reply);
       }
       if (buffer.length > this.config.maxBytes) fail();
@@ -77,16 +87,25 @@ export class StdioAI {
     return new Promise((resolve, reject) => {
       if (signal.aborted) { reject(new Error('cancelled')); return; }
       try { this.start(); } catch { reject(new Error('backoff')); return; }
-      const abort = () => this.breakChild();
-      const timer = setTimeout(abort, this.config.timeoutMs);
+      const child = this.child, replies = this.replies;
+      const cancel = () => {
+        if (this.pending.get(observation.id)?.finish !== finish) return;
+        if (this.child === child) {
+          if (this.abandoned.size >= ABANDONED_CAP) this.abandoned.delete(this.abandoned.values().next().value);
+          this.abandoned.add(observation.id);
+        }
+        finish(true);
+      };
+      // No line from the child since this request was written: treat as a hang and restart after backoff.
+      const timer = setTimeout(() => (this.child === child && this.replies === replies ? this.breakChild() : cancel()), this.config.timeoutMs);
       const finish = (error, reply) => {
         clearTimeout(timer);
-        signal.removeEventListener('abort', abort);
+        signal.removeEventListener('abort', cancel);
         this.pending.delete(observation.id);
         if (error) reject(new Error('transport')); else resolve(reply);
       };
       this.pending.set(observation.id, { finish });
-      signal.addEventListener('abort', abort, { once: true });
+      signal.addEventListener('abort', cancel, { once: true });
       this.child.stdin.write(`${JSON.stringify(observation)}\n`);
     });
   }
@@ -97,6 +116,7 @@ export class StdioAI {
     this.retryAt = Date.now() + this.config.backoffMs;
     // [ASSUMED] SIGKILL bounds cleanup even if the configured program ignores SIGTERM.
     child?.kill('SIGKILL');
+    this.abandoned.clear();
     for (const p of [...this.pending.values()]) p.finish(true);
   }
 

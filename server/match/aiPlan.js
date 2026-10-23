@@ -10,10 +10,17 @@ export function validPlan(p) {
   for (const k of ['buy', 'keep', 'sell']) if (p[k] !== undefined && !ids(p[k])) return false;
   if (p.bonds !== undefined && (!Array.isArray(p.bonds) || p.bonds.length > 8 || !p.bonds.every(b =>
     keys(b, ['id', 'priority']) && ids([b.id]) && integer(b.priority, 5) && b.priority > 0))) return false;
-  if (p.economy !== undefined && (!keys(p.economy, ['saveForInterest', 'reserve', 'level', 'maxRefreshes', 'refreshAbove'])
-    || Object.entries(p.economy).some(([k, v]) => k === 'saveForInterest' ? typeof v !== 'boolean'
-      : !integer(v, k === 'level' ? 6 : k === 'maxRefreshes' ? 16 : 100)))) return false;
-  if (p.items !== undefined && (!keys(p.items, ['keep', 'equip'])
+  if (p.economy !== undefined) {
+    const e = p.economy;
+    if (!keys(e, ['saveForInterest', 'reserve', 'level', 'holdLevel', 'why', 'maxRefreshes', 'refreshAbove', 'freezeSearch'])
+      || Object.entries(e).some(([k, v]) => ['saveForInterest', 'holdLevel', 'freezeSearch'].includes(k) ? typeof v !== 'boolean'
+        : k === 'why' ? typeof v !== 'string' || !v.trim() || v.length > 360
+          : !integer(v, k === 'level' ? 6 : k === 'maxRefreshes' ? 16 : 100))) return false;
+    // Maintainer 2026-10-19 (§35.13): holding a low-level build is deliberate, with a stated reason.
+    if (e.holdLevel && (!(e.level >= 1) || !e.why?.trim())) return false;
+  }
+  if (p.items !== undefined && (!keys(p.items, ['buy', 'keep', 'equip'])
+    || (p.items.buy !== undefined && (!ids(p.items.buy) || p.items.buy.length > 8))
     || (p.items.keep !== undefined && !ids(p.items.keep))
     || (p.items.equip !== undefined && (!Array.isArray(p.items.equip) || p.items.equip.length > 16
       || !p.items.equip.every(e => keys(e, ['id', 'target']) && ids([e.id, e.target])))))) return false;
@@ -30,16 +37,39 @@ export function validUsage(u) {
 
 export const advisorPlan = (m, ps) => m.externalAI?.planFor(ps) ?? null;
 const matches = (m, id, want) => id === want || m.gd.baseIdOf(id) === m.gd.baseIdOf(want);
-export const planContains = (m, list, id) => !!list?.some(want => matches(m, id, want));
+// Maintainer 2026-10-20 / §35.14: keep/sell refer to the exact normal or elite form.
+export const planContains = (_m, list, id) => !!list?.includes(id);
+
+export function ownsElite(m, ps, id) {
+  const gd = ps.gd || m.gd, base = gd.baseIdOf(id);
+  return ps.allChess().some(p => gd.baseIdOf(p.id) === base && gd.isGolden(p.id));
+}
+
+// [ASSUMED] A first normal copy starts merge progress; an owned elite ends procurement for that base.
+// Official merge counts/forms and distinct bond membership come from GameData (§6.2/§6.3).
+export function planCopyUseful(m, ps, id) {
+  const gd = ps.gd || m.gd;
+  if (!gd.chess(id) || gd.isGolden(id) || ownsElite(m, ps, id)) return false;
+  return gd.mergeCount(gd.baseIdOf(id)) > 1 || (!!advisorPlan(m, ps)?.bonds?.some(b =>
+    !gd.modeInactiveBonds.has(b.id) && gd.chess(id).bonds?.includes(b.id))
+    && !ps.allChess().some(p => gd.baseIdOf(p.id) === gd.baseIdOf(id)));
+}
+
+export function planBuyTarget(m, ps, id) {
+  const p = advisorPlan(m, ps);
+  return !!p && !planContains(m, p.sell, id) && planCopyUseful(m, ps, id)
+    && !!p.buy?.some(want => matches(m, id, want));
+}
 
 // [ASSUMED] Additive scores: priority 1..5 gives 6..30 points; units ±24, keep +18.
 export function planUnitWeight(m, ps, id, buying = false) {
   const p = advisorPlan(m, ps);
   if (!p) return 0;
   const rec = (ps.gd || m.gd).chess(id);
-  return (planContains(m, buying ? p.buy : p.keep, id) ? (buying ? 24 : 18) : 0)
+  const bondUseful = buying ? planCopyUseful(m, ps, id) : rec?.isGolden || planCopyUseful(m, ps, id);
+  return ((buying ? planBuyTarget(m, ps, id) : planContains(m, p.keep, id)) ? (buying ? 24 : 18) : 0)
     - (planContains(m, p.sell, id) ? 24 : 0)
-    + (p.bonds || []).reduce((n, b) => n + (rec?.bonds?.includes(b.id) && !m.gd.modeInactiveBonds.has(b.id) ? b.priority * 6 : 0), 0);
+    + (p.bonds || []).reduce((n, b) => n + (bondUseful && rec?.bonds?.includes(b.id) && !m.gd.modeInactiveBonds.has(b.id) ? b.priority * 6 : 0), 0);
 }
 
 export function planPlacementWeight(m, ps, id, row, col, dir) {

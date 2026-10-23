@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeMatch, DATA, give, giveItem, checkInvariants } from './harness.js';
 import { validPlan, planPlacementWeight } from '../../server/match/aiPlan.js';
-import { buyScoreOf, itemTarget, levelUp } from '../../server/match/bot.js';
+import { buyScoreOf, itemTarget, levelUp, bondPlan } from '../../server/match/bot.js';
 import { externalConfig } from '../../server/match/externalConfig.js';
 import { decodeTestTrace, replayTestMatch } from '../../server/match/testReplay.js';
 import { FakeBattle } from './fakeBattle.js';
@@ -58,14 +58,14 @@ test('accepted plan weights procurement, units, bonds and items without extra RN
   m.round++; assert.equal(m.externalAI.planFor(ps), null);
 });
 
-test('plan keeps items, suppresses refreshes and limits leveling; impossible wishes still reach Ready legally', t => {
+test('plan keeps items and explicit level hold; impossible wishes still reach Ready legally', t => {
   const h = fixture(t), { m } = h, ps = m.order[0];
   const item = giveItem(m, ps, 'chess_item_1_01_e_a');
   send(m, { buy: ['missing'], keep: ['missing'], sell: ['missing'], items: { keep: [item.id] },
-    economy: { maxRefreshes: 0, level: 1, reserve: 100 }, placements: [{ id: 'missing', row: 0, col: 0 }] });
+    economy: { maxRefreshes: 0, level: 1, holdLevel: true, why: 'Farm low-tier elites.', reserve: 100 }, placements: [{ id: 'missing', row: 0, col: 0 }] });
   assert.equal(itemTarget(m, ps, item), null);
   assert.ok(h.run(() => ps.ready));
-  assert.equal(ps.stats.refreshes, 0); assert.equal(ps.shop.level, 1);
+  assert.equal(ps.shop.level, 1);
   assert.ok(ps.deployCount > 0); checkInvariants(m); assert.deepEqual(h.logs.error, []);
 });
 
@@ -156,4 +156,45 @@ for (const transport of ['http', 'stdio']) test(`advisor ${transport}: one hello
   assert.ok(ai.metrics.calls > 2 && ai.metrics.calls < h.m.round * 4 + 4);
   assert.ok(ai.metrics.latencyMs > 0); assert.deepEqual(h.logs.error, []);
   assert.equal(ai.inflight.size, 0);
+});
+
+test('§35.62 plan mode: a late prep keeps the last accepted direction; only protocol errors count toward the limit', t => {
+  const h = fixture(t), { m } = h, ps = m.order[0];
+  const id = ps.shop.slots.find(s => s?.kind === 'chess').id;
+  const bond = ps.gd.chess(id).bonds.find(b => !m.gd.modeInactiveBonds.has(b));
+  send(m, { buy: [id], bonds: [{ id: bond, priority: 4 }], placements: [{ id, row: 9, col: 4 }],
+    economy: { level: 1, holdLevel: true, why: 'Hold one round.', reserve: 3 } });
+  const state = m.externalAI.states.get(ps.playerId);
+  const nextPrep = (round = m.round) => h.run(() => pending(m)?.kind === 'prep' && m.round > round);
+  assert.ok(nextPrep());
+  // §35.63: of the economy only the funds direction (saveForInterest, reserve) carries over.
+  const carried = { buy: [id], bonds: [{ id: bond, priority: 4 }], economy: { reserve: 3 } };
+  assert.deepEqual(m.externalAI.planFor(ps), carried, 'no placements, choice or one-prep hold carry over');
+  m.externalReply(pending(m).id, null, 'timeout');
+  assert.equal(state.failures, 0);
+  assert.deepEqual(m.externalAI.planFor(ps), carried);
+  assert.ok(h.run(() => ps.ready));
+  assert.ok(nextPrep());
+  const job = pending(m);
+  m.externalReply(job.id, { v: 'sp-ai/1', id: job.id, plan: null }, false);
+  assert.equal(state.failures, 0, 'an agent that could not plan in time is not a broken adapter');
+  assert.ok(h.run(() => ps.ready));
+  assert.ok(nextPrep());
+  m.externalReply(pending(m).id, { v: 'bad' }, false);
+  assert.equal(state.failures, 1);
+  assert.deepEqual(m.externalAI.planFor(ps), carried);
+  assert.equal(state.disabled, false);
+  checkInvariants(m); assert.deepEqual(h.logs.error, []);
+});
+
+test('§35.62 the plan\'s primary core bond leads legacy\'s focus before a member is owned', t => {
+  const { m } = fixture(t), ps = m.order[0];
+  const owned = new Set(ps.allChess().flatMap(p => ps.gd.chess(p.id)?.bonds || []));
+  const id = m.gd.bondIds.find(b => m.gd.bond(b)?.isCore && !m.gd.modeInactiveBonds.has(b) && !owned.has(b));
+  const before = bondPlan(m, ps).focus;
+  send(m, { bonds: [{ id, priority: 5 }] });
+  assert.equal(bondPlan(m, ps).focus, id);
+  assert.notEqual(before, id);
+  const member = m.gd.visibleChess.find(c => !m.gd.isGolden(c) && m.gd.chess(c).bonds?.includes(id));
+  assert.ok(buyScoreOf(m, ps, member) > 0);
 });

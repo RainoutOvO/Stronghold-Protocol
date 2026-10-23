@@ -6,6 +6,7 @@ import { GameData } from '../../server/match/gamedata.js';
 import { aiObservation } from '../../server/match/externalAI.js';
 import { validateC2S } from '../../shared/protocol.js';
 import { buildRecordOverlay } from '../../shared/i18nData.js';
+import { getVersionData } from '../../server/data.js';
 
 const opts = { modeId: 'mode_single_normal' };
 test('knowledge is immutable, cached, content-addressed, language-aware and independent of match state', () => {
@@ -17,6 +18,12 @@ test('knowledge is immutable, cached, content-addressed, language-aware and inde
   assert.ok(a.operators.some(p => p.skill.effect)); assert.ok(a.items.some(i => i.effect));
   assert.ok(a.bonds.every(b => b.thresholds.length)); assert.equal(a.economy.exp, null);
   assert.match(a.economy.shopOdds, /remaining/);
+  assert.match(a.economy.freezeRule, /unsold/);
+  assert.match(a.economy.refreshRule, /cancels freezing/);
+  assert.match(a.economy.sellRule, /not their purchase price/);
+  assert.ok(a.operators.every(p => p.sellValue >= 0));
+  assert.ok(a.bands.find(b => b.id === 'band_cannot').carriesFunds);
+  assert.equal(a.bands.find(b => b.id === 'band_narant').carriesFunds, false);
   for (const l of a.economy.shop) assert.ok(Math.abs(l.initialTierSharesBeforeBans.reduce((s, p) => s + p.probability, 0) - 1) < 1e-8);
   const copy = structuredClone(DATA);
   assert.equal(knowledgePack(copy, opts).version, a.version);
@@ -26,6 +33,15 @@ test('knowledge is immutable, cached, content-addressed, language-aware and inde
   assert.notEqual(knowledgePack(DATA, { ...opts, contentId: 'plugin-script-version' }).version, a.version);
   assert.ok(a.playingEconomy.includes('|'));
   assert.notEqual(knowledgePack(DATA, { ...opts, rules: { unequip: 'allow' } }).version, a.version);
+});
+
+test('another official version\'s data names it (gameVersion, DESIGN §35.23); the default pack has no such key', () => {
+  const a = knowledgePack(DATA, opts);
+  assert.equal(Object.hasOwn(a, 'gameVersion'), false);
+  const v = knowledgePack(getVersionData('act1autochess'), opts);
+  assert.equal(v.gameVersion, 'act1autochess');
+  assert.notEqual(v.version, a.version);
+  assert.ok(v.bonds.length === 18, '第一期\'s 18 bonds');
 });
 
 test('active plugin records and offer cards are included; stale translations cannot mask plugin edits', () => {

@@ -40,6 +40,10 @@ export async function loadBrowserSim({ base = '/sim/', dataBase = '/data/', fetc
   if (missing.length) throw new Error(`simulation data unavailable: ${missing.join(', ')}`);
   const raw = {};
   SIM_DATA_FILES.forEach((n, i) => { raw[n] = deepFreeze(files[i]); });
+  // another official version's set (versions M1, DESIGN §35.23): its version marker, so the content modules find kits
+  // and item behaviour by charId / effectId (support isVersionData reads config.version) like the version host does.
+  // The default data and plugin sets carry no config.version: their raw stays without `config`, as before.
+  if (data?.config?.version && typeof data.config.version === 'object') raw.config = deepFreeze({ version: structuredClone(data.config.version) });
   simdata.setSimData(raw);
   if (typeof support.setGameData === 'function') support.setGameData(null); // re-read through the injected data
   await installSimBounds(base, raw, data ? bounds : undefined);

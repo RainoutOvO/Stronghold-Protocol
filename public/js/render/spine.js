@@ -416,6 +416,7 @@ export class SpineActor {
     this.endAt = 0;               // landing in endRoles (the next form's) when given
     this.endRoles = null;
     this.skillIndex = null;       // the skill slot whose clip `skill` plays (setSkillIndex), null = the manifest's primary
+    this.strike = null;           // the attack-class skill clip the next / current attack plays (castStrike)
     this.runMode = false;         // move on the model's own Run cycle (setRunMode)
     this.formRoles = null;        // the clip set of the form in force (setForm), over the unit's own roles
     this.skillOn = false;
@@ -775,7 +776,18 @@ export class SpineActor {
     return withHit || cands[0];
   }
 
+  /**
+   * The clip of the attack-class skill the next attack is (render/units.js UnitView.onCast: an enemy's `strike` slot,
+   * `anims.skills[slot]` — 杰斯顿·威廉姆斯's C1_Skill): that attack plays it in place of its attack clip, then the clip's end
+   * restores the attack role; null = a plain attack. A clip the model lacks is ignored.
+   * @param {{ begin: string|null, loop: string, end: string|null }|null} clip
+   */
+  castStrike(clip) {
+    this.strike = clip && this.has(clip.loop) ? clip : null;
+  }
+
   _attackClip() {
+    if (this.strike) return this.strike;
     const sk = this.roles.skill;
     const mode = this.skillOn ? this.skillAttackMode?.() : null;
     if (this.skillOn && !this._skillLoopHeld()) {
@@ -997,6 +1009,7 @@ export class SpineActor {
             break;
           }
           const clip = this._attackClip() || this.roles.attack;
+          this.strike = null;   // a strike attack is over (castStrike)
           // a skill with its own idle: back to that idle (its end clip is for the end of the skill, setSkill(false))
           const toSkillIdle = clip === this.roles.skill && !!this._skillIdle();
           if (clip && this.has(clip.end) && !toSkillIdle) { this._play(clip.end, false); this._queue(this._baseName(), true); }

@@ -80,6 +80,10 @@ export class MatchViews {
       modeId: this.modeId,
       difficulty: this.difficulty,
       stageId: this.stageId,
+      // a non-default official version's match (DESIGN §35.23): its registry id, so a page that never saw the room (a
+      // reload after it closed: the lobby's result replay) reads the frames with that version's data; absent for the
+      // default, whose frames stay byte-identical
+      ...(this.version ? { version: this.version } : {}),
       setupRevision: this.setupRevision,
       rerollVote: this.setupVote ? {
         id: this.setupVote.id,

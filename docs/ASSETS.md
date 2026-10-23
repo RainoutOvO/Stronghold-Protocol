@@ -369,7 +369,16 @@ remain local; no official scene bytes belong in git or fixtures.
   - A web enemy model whose clip names mislead the resolver gets the roles of its official battle prefab
     (`tools/assets/spine.mjs PREFAB_SPINE_ROLES`, read from the local client's `battle/enm_pfb_*.ab`: the prefab's anim
     key → clip table and the clip its Spine starts on): 普通囚犯 / 老练囚犯 start on their grey `*3` set (【禁锢】), not
-    the unnumbered red one (【解放】) the names point to.
+    the unnumbered red one (【解放】) the names point to. 盐风主教昆图斯, 假想敌：胄 (both records) and 阿利斯泰尔 get
+    `skills` per data slot from their EnemySkill abilities' `_animKey` (fx/index.json `units.<key>.skills.*.abilities`):
+    the resolver's "Skill_n = slot n−1" swapped 大潮 / 崩坍 and gave 死亡集群 `Skill_2` for `Skill_3` (0.3.2, history
+    §35.19). The same table covers 泥岩 (its two slots swapped), “自在” (CrossAttack `Skill_01_02`), “斩胄之剑” / “破胄之锤”
+    (`Launch_Begin` / `Back_End`), 锏 (`A_Skill2` / `B_Skill2`) and, as `strike` slots (an attack-class skill whose
+    attack plays the clip, design/client.md §9), 杰斯顿·威廉姆斯 (`C1_Skill` / `C2_Skill`) and “碎铳之簧” (`Skill_b` /
+    `Skill_c`) (history §35.48). A slot whose ability names no clip keeps the resolved one, marked in the table
+    ([ASSUMED] for 自在's 破桎而出). `test/enemy-skill-clips.test.js` compares every enemy slot the sim casts with the
+    official animKey when the effects index is extracted. `applyRoleFix` checks every clip of a `skills` map; a fix naming
+    a missing clip keeps the resolved roles.
 - **Fonts:** OTF/TTF files are converted to WOFF2 by a built-in encoder (`tools/assets/woff2.mjs`: Brotli with null transforms).
   - Its output was verified lossless against Google's reference `woff2` decoder.
   - `fonts.css` lists WOFF2 first and falls back to the original file.
@@ -474,8 +483,9 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
   // in `_n`) — with their own projectile banks (ON_PROJECTILE_BORN / _HIT.projectile_chr_<name>) as fallbacks
   // (DESIGN §18.4: 纯烬艾雅法拉's S3 impact used to be her `hit`); an operator with such a plain bank (its default mode is
   // the unsuffixed ability) never takes a numbered variant `attack.N` — a skill mode's, whatever its file name (银灰's S3
-  // swing p_atk_silver_n, community report of 2026-10-06); one that numbers its default mode (`attack.0` …) keeps the
-  // numbered order; enemies and tokens take the first attack-like bank
+  // swing p_atk_silver_n, community report of 2026-10-06); one that numbers its default mode takes those banks (`attack.0`,
+  // `attack.0.1` …, START before ON) before any other number, so a shallower skill bank never wins (弑君者's S3 `attack.3`
+  // smoke impact was her normal one until 0.3.2, DESIGN §35.38); enemies and tokens take the first attack-like bank
   fonts: { css: '/fonts/fonts.css', faces: { [name]: { family, weight, woff2?, original } } }
 }
 ```
@@ -493,7 +503,8 @@ remake anti-spam rules are specified in [design/client.md](design/client.md#skil
 ```js
 {
   skel, atlas, textures: [url],       // load with PIXI.Assets.load(skel); atlas/png sit next to it
-  pma: boolean,                       // true for enemies (atlas already carries `pma: true`)
+  pma: boolean,                       // true only for the fetched Ark-Models enemies; false for the extracted models,
+                                      // whose straight pages carry no `pma` field
   anims: Roles,                       // resolved roles, below
   animations: { [name]: seconds },    // every animation with its duration
   events: [name],                     // e.g. ['OnAttack', 'OnStart']
@@ -510,14 +521,17 @@ ranged enemy for that clip, GitHub #58, and strikes every enemy attack at that f
 
 ```js
 Clip      = { begin: string|null, loop: string, end: string|null, via?: 'combat'|'attackAny'|'skill'|'idle'|'attack' }
-SkillClip = Clip & { index: number /* 0-based skill index */, idle: string|null /* Skill_n_Idle */ }
+SkillClip = Clip & { index: number /* 0-based skill index */, idle: string|null /* Skill_n_Idle */,
+                     strike?: true /* an enemy's attack-class slot: the attack it is cast in plays this clip */ }
 Roles = {
   idle: string, deploy: string,
   attack: Clip,            // play begin once, loop per attack, end when stopping; `via:'idle'` ⇒ add a flash
   attackDown: Clip|null,   // _Down variants (target below the unit)
   skill: SkillClip|null,   // for the chess's default skill (primary index)
   skills?: { [index]: SkillClip },   // when the char is used with several default skills (backups); an enemy: every
-                           //   numbered skill clip (Skill_01..04 of 盐风主教昆图斯 — the slot a sim `cast` event names, PR #275)
+                           //   numbered skill clip as slot n−1 (the slot a sim `cast` event names, PR #275) — or, from
+                           //   PREFAB_SPINE_ROLES, the clip of each data slot's official ability (盐风主教昆图斯, 胄, 阿利斯泰尔,
+                           //   泥岩, 自在, the 胄's hands, 锏, 杰斯顿, 碎铳之簧 — history §35.48)
   die: string|null,        // null ⇒ a Back model gives way to the Front model's Die (DESIGN §22.1); any other
                            //   skeleton holds its idle's first frame while it fades out
   move: Clip|null,         // enemies: Move_Begin|Move_Start + Move_Loop|Move + Move_End → Run_*
@@ -595,8 +609,16 @@ Other renderer rules from research 07 §5.4–5.5:
     `enemies[id].spineLocal` = `{ group, skel, atlas, textures, pma, anims, animations, events, hits, bounds }` (file
     names in the `data/local-assets.json` group `spine/enemy/{enemyId}`; the rest as a `spine` entry):
     - `tools/local-extract/extract.py` writes the model to `public/assets/local/spine/enemy/{enemyId}/` (page textures
-      with their `[alpha]` texture merged in: premultiplied RGB + A like Ark-Models; the atlas gets `size:` and
-      `pma: true`) and lists its files in `data/local-assets.json`.
+      with their `[alpha]` texture merged in: straight RGBA, the main texture's RGB untouched; the atlas gets `size:` and
+      no `pma` field) and lists its files in `data/local-assets.json`.
+    - An extraction from before this change wrote premultiplied pages (`pma: true`, RGB clamped to A); the `min(RGB, A)`
+      clamp lost colour and cannot be converted back. Re-extraction is still required for that reason, not because of the
+      manifest: the loader reads the atlas's `pma`, not `spineLocal.pma` in `data/assets.json`, and an old page with its
+      old atlas stays a matched pair — changing the manifest alone does not premultiply it again. Re-run
+      `node tools/setup.mjs --local` once after upgrading (`--local` re-extracts even when the art is already there) and
+      update the page and atlas as a set: a straight page with an atlas that carries no `pma`; never mix an old page or
+      an old atlas. Refresh the metadata with `fetch-assets --local-spines` (and `data/assets.json`) and repackage the
+      affected skin plugins. Legacy `pma: true` assets remain readable; the new extraction writes straight pages.
     - The metadata comes from the committed `tools/assets/local-enemy-spines.json` (`fetch-assets --local-spines`
       parses the extracted models into it), never from the disk: `data/assets.json` is byte-identical with or without
       the extraction, it has no `/assets/local/` URL, and setup / doctor / the manifest tests never miss these files.
@@ -619,8 +641,9 @@ Other renderer rules from research 07 §5.4–5.5:
   - `tools/local-extract/extract.py TOKEN_SPINES` (40 ids; `--only spine/token`) reads each token's battle prefab
     (`dyn/battle/prefabs/[uc]tokens/<id>.prefab`), takes the skeleton of its Front renderer — a directional token has
     Front / Back (/ Down) renderers, each with its own skeleton of the same name; the web tokens use Front too — and
-    writes it to `public/assets/local/spine/token/{tokenId}/` like an enemy model (skeleton, sized `pma: true` atlas,
-    premultiplied pages: the older tokens' `[alpha]` texture merged in, the newer RGBA pages kept with their own alpha).
+    writes it to `public/assets/local/spine/token/{tokenId}/` like an enemy model (skeleton, straight pages with the
+    older tokens' `[alpha]` texture merged in, the newer RGBA pages kept with their own alpha, and an atlas with `size:`
+    and no `pma` field).
   - `tokens[id].spineLocal` = `{ group: 'spine/token/{tokenId}', skel, atlas, textures, pma, anims, … }` from the
     committed `tools/assets/local-token-spines.json` (`fetch-assets --local-spines`), never from the disk;
     `assets.js spineEntry` draws the model when `data/local-assets.json` lists every file of it, else (or when it fails
@@ -736,7 +759,9 @@ The title screen's **导入素材包** button (`public/js/ui/assetImport.js`), b
 
 Verification uses the served manifests (`GET /data/assets.json`, and `GET /data/local-assets.json` and `GET /data/local-fx.json` when the server has them). A hashed URL maps back to a plain `assets/…` or `fonts/…` path. A file is stored only when the first 16 hex digits of its SHA-256 equal the hash in that URL. A Spine model is accepted only as a whole group, with the same model hash the server uses: SHA-256 of the members' file hashes joined by newlines (skeleton, atlas, then pages — the default `<skel>.png` when the manifest lists no textures). A mismatch, or a file the manifest does not list, is not stored. A path with no hash segment cannot be checked, so it is not imported; the download queue can still fetch it.
 
-Accepted bytes go into Cache Storage under the name `sp-imported-assets-v1`, at the hashed `/assets/` or `/fonts/` URL and, for audio, also at the `/media/~<hash>/…` URL playback requests. As an import ends, the pathnames it stored are added to one JSON entry of that cache, `/sp-imported-index.json`, which the dialog's count and the download queue read: Chrome refuses `Cache.keys()` for a cache of more than about 15,000 entries ("Operation too large"), and a whole pack stores some 43,000. `public/sw.js` is a classic service worker (not a module, so the browsers this project already supports can register it). `public/js/main.js` registers it on a secure context only (`updateViaCache: 'none'`, scope `/`). It intercepts same-origin GET whose path matches `/assets/~<16 hex>/`, `/fonts/~<16 hex>/` or `/media/~<16 hex>/`. A cache hit is returned. A miss is fetched from the network and is not written into this cache. A request with a `Range` header is not intercepted. HTML, scripts, `/data/`, `/sim/` and `/ws` are never handled.
+Accepted bytes go into Cache Storage under the name `sp-imported-assets-v1`, at the hashed `/assets/` or `/fonts/` URL and, for audio, also at the `/media/~<hash>/…` URL playback requests. As an import ends, the pathnames it stored are added to one JSON entry of that cache, `/sp-imported-index.json`, which the dialog's count and the download queue read: Chrome refuses `Cache.keys()` for a cache of more than about 15,000 entries ("Operation too large"), and a whole pack stores some 43,000. Import completion and old-version pruning hold the same exclusive Web Lock (`sp-imported-assets-v1:index`) from reading the index through writing its replacement, so cooperating same-origin tabs cannot overwrite each other's index updates. The cache name and JSON format are unchanged. `public/sw.js` is a classic service worker (not a module, so the browsers this project already supports can register it). `public/js/main.js` registers it on a secure context only (`updateViaCache: 'none'`, scope `/`). It intercepts same-origin GET whose path matches `/assets/~<16 hex>/`, `/fonts/~<16 hex>/` or `/media/~<16 hex>/`. A cache hit is returned. A miss is fetched from the network and is not written into this cache. A request with a `Range` header is not intercepted. HTML, scripts, `/data/`, `/sim/` and `/ws` are never handled.
+
+A browser without Web Locks (`navigator.locks`) keeps the previous sequential behaviour: the same updates, without cross-tab serialization. The project lists no browser minimums (DEPLOY.md: Firefox and Safari have not been specifically tested). Already-open pages running older code do not participate in the lock; refresh those pages. This lock covers index mutations only: it does not coordinate clearing the entire cache, recover earlier orphan entries, or make an in-progress import's asset writes atomic with pruning.
 
 `worker-src 'self' blob:` was already the site policy (`server/http/csp.js`). `'self'` is what `/sw.js` needs. `blob:` stays for the simulation worker the page already starts. No remote worker origin is added, and `SIM_WORKER_CSP` does not gain this worker.
 
@@ -748,7 +773,8 @@ On `http://` to a LAN IP, `isSecureContext` is false. The import controls explai
 When `public/assets` exists, the same file also checks the generated output:
 - Every manifest path exists on disk.
 - Every pool operator has an avatar, a portrait and a Front model.
-- Every atlas has `size:` lines, plus `pma: true` for enemies.
+- Every atlas has `size:` lines, plus `pma: true` for the fetched Ark-Models enemies (their pages are premultiplied). An
+  extracted page is straight and carries no `pma` field.
 - Every Spine model loads the way the client loads it — the local-client enemy and token models too, when `data/local-assets.json` lists them. That means pixi-spine's atlas reader with real page sizes, where a region outside its page throws, then `SkeletonBinary` with `AtlasAttachmentLoader`, where a missing region throws. Every resolved role is then posed.
 
 `test/feedback1d-models.test.js` (enemies) and `test/local-token-models.test.js` (tokens) check the local-client overlays: the plan, the committed metadata, the manifest without `/assets/local/` URLs, the client's choice of model; `test/local-extract.test.js` the extractor's job table and helpers.
@@ -790,7 +816,14 @@ that skill switches to. A mode named exactly `S<n>` that no skill switches to is
 named link [ASSUMED]; a mode another skill already links is not taken (§34.3). It is not skill N−1 (银灰's `attack.2` is his S3 mode; 司霆惊蛰's keys are dotted). Without the
 index, a skill's activation sound supplies the letter, and otherwise d/h/s = slots 1/2/3 is [ASSUMED]. Competing banks
 prefer START over ON, then plain/numeric order; this is a deterministic approximation, not proof of every operator's
-runtime ability graph. Mixed-letter banks, and files that are not `_d` / `_h` / `_s`, are skipped. Preserve `mixOf` for
+runtime ability graph. Mixed-letter banks are skipped, and so is a bank of plain `_n` files — except a numbered mode bank that plays a file the unit's
+normal attack (the bare ability bank, or a numbered default `attack.0`) never does: 宴's S2 impact `p_imp_darksword_n` beside her
+normal `p_imp_sword_n` is that mode's sound, while 银灰's S3 swing `p_atk_silver_n` (no plain swing bank to compare with) stays
+out. Judged per kind (swing / impact), so a mode may keep the normal swing and only replace the impact. The normal files
+are the bare bank and every mode 0 bank (`attack.0`, `combat.0.1`, …). Such a plain bank only fills a skill that no
+lettered bank fills (假日威龙陈's START `p_atk_watergun_d_cast` never displaces her ON `p_atk_watergun_d`), and only for
+the mode the skill itself links, never as a phase fill (乌尔比安's `S3_Respawn_A`). The rule reaches beyond 宴: on the
+official banks it adds 26 swing / impact slots on 19 operators (DESIGN §35.38 lists them). Preserve `mixOf` for
 each selected bank separately; `attacks`/`hits` and `attackMix`/`hitMix` use matching skill keys. Regenerate the current
 manifest instead of importing an older PR's full JSON, preserving JP voices and current operators. See DESIGN §34.3.
 

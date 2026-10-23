@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { unscaled } from '../helpers/uiSize.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 globalThis.fetch = async (url) => {
@@ -174,7 +175,7 @@ test('the module card reads its talent changes at the operator\'s 潜能, as 局
 test('css: the selected skill\'s frame is square around its icon (GitHub #398 / PR #399): no img max-width clamp, fill beats `.lo-sicon img`', () => {
   // theme.css `img { max-width: 100% }` held the frame's width to the icon's while its height grew by .1rem (36 × 40 px
   // on a phone, 70 × 80 at 1920 px), and the more specific `.lo-sicon img { object-fit: cover }` cropped its side lines
-  const css = readFileSync(path.join(ROOT, 'public/css/screens/loadout.css'), 'utf8');
+  const css = unscaled(readFileSync(path.join(ROOT, 'public/css/screens/loadout.css'), 'utf8'));
   const rule = css.match(/^([^{}\n]*\.lo-sicon__outline) \{([^}]*)\}/m);
   assert.ok(rule, 'the frame rule');
   assert.equal(rule[1], '.lo-sicon .lo-sicon__outline', 'more specific than `.lo-sicon img`');
@@ -186,7 +187,7 @@ test('css: the selected skill\'s frame is square around its icon (GitHub #398 / 
 });
 
 test('css: the head and the rows share one grid (columns aligned), quick targets grow on a coarse pointer, the detail slides over below 1000 px', () => {
-  const css = readFileSync(path.join(ROOT, 'public/css/screens/loadout.css'), 'utf8');
+  const css = unscaled(readFileSync(path.join(ROOT, 'public/css/screens/loadout.css'), 'utf8'));
   assert.match(css, /\.lo-list__head, \.lo \.lo-card \{ display: grid; grid-template-columns: var\(--cols\);/);
   assert.match(css, /\.sp-coarse \.lo-list \{ --q: max\(\.44rem, 40px\); \}/);
   const block = css.slice(css.indexOf('@media (max-width: 1000px) {\n  .lo-body'));

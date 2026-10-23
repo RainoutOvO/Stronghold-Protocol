@@ -21,8 +21,11 @@ export class BattleLifecycle {
     // boss) the players' fields deploy at the same time (PRTS: one unit after another with a fixed delay, from the battle
     // start), so the i-th operators of all players come in together (in `players` order), then the summons likewise
     const seq0 = this._deploySeq;
-    const lists = this.players.map((ps) => ps.units.filter((u) => u.kind === 'op' || u.kind === 'token').slice().sort((a, b) =>
-      (ps.mirror ? b.homeC - a.homeC : a.homeC - b.homeC) || b.homeR - a.homeR || a.id - b.id));
+    const rowBottomUp = this.data.raw?.config?.version?.rules?.deployOrder === 'rowBottomUp';
+    const lists = this.players.map((ps) => ps.units.filter((u) => u.kind === 'op' || u.kind === 'token').slice().sort((a, b) => {
+      const col = ps.mirror ? b.homeC - a.homeC : a.homeC - b.homeC;
+      return (rowBottomUp ? a.homeR - b.homeR || col : col || b.homeR - a.homeR) || a.id - b.id;
+    }));
     // a summon piece flagged `deferDeploy` by content (one its owner's loadout does not make — 赫默 on S1 with a drone
     // piece —, or a skill's summon when shared/constants.js SKILL_SUMMON_START_DEPLOY is off: content/tokens.js
     // dockSkillSummons) stays off the field, its tile reserved (isReservedTile), until content deploys it

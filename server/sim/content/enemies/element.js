@@ -1,9 +1,10 @@
 // server/sim/content/enemies/element.js — ELEMENT 元素 kits (element damage, 海嗣 / 萨卡兹 / 孽生 enemies) and their part of
 // KITS (split from content/enemies.js).
 
-import { periodicDamage } from '../../damage.js';
+import { periodicDamage } from '../../attack.js';
 import {
   stOf, T, elem, hurt, targetsNear, areaAllies, areaAlliesInTiles, targetAndArea, byPriority, setForm, onTerrain,
+  attackSkillOf,
 } from './helpers.js';
 import { taunt, ep, deathSpawn, deathBoom, setFloat, float, skill, kitEp, kitStun3 } from './archetypes.js';
 
@@ -96,7 +97,7 @@ function kitDeathEye(ab, e) {
         for (const u of targetAndArea(t, areaAllies(b, e2, t.x, t.y, 1))) elem(b, e2, u, 'apoptosis', e2.s.atk * (s.bb.ep_damage_ratio ?? 0));
       }
     }, { owner: e2 });
-  }, { sil: true, cond: (b, e2) => targetsNear(b, e2, r).length > 0 })];
+  }, { sil: true, cond: (b, e2) => targetsNear(b, e2, r).length > 0, turn: attackSkillOf('enemy_1275_dwlock_2', 'DeathEye') })];   // the attack's turn (DESIGN §35.52)
 }
 
 /**

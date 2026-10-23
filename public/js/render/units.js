@@ -223,6 +223,12 @@ export const SLIDE_FRICTION = 1;
  */
 const DIE_FADE_TAIL = 0.55;
 /**
+ * Game s within which an 'atk' handed out after an enemy's `cast` of a `strike` slot is that cast's attack (UnitView.onCast):
+ * the sim sends both in one tick (the cast from the attack's `before` hook, the 'atk' of each target right after), so one
+ * render batch hands them out together; the window only covers a batch split by a late frame.
+ */
+export const STRIKE_WINDOW = 0.25;
+/**
  * Longest Die clip a death plays out (s): the longest enemy Die clip of data/assets.json is 盐风主教昆图斯's 7.97 s (234
  * enemy Die clips; the old 1.6 s cap cut 25 of them short — the bosses' most), and the official client plays its clip
  * out (PR #380). It only bounds a view whose data lies.
@@ -349,6 +355,8 @@ const clipSet = (idle, move, die, attack = null) => Object.freeze({
   attack: attack ? loop(attack, 'attackAny') : null,
   skill: attack ? Object.freeze({ begin: null, loop: attack, end: null, via: 'attack', index: 0, idle: null }) : null,
 });
+/** A clip set without its `skill` role: the unit's own skill slot clips (anims.skills, setSkillSlot) play in that form. */
+const withoutSkill = (roles) => Object.freeze(Object.fromEntries(Object.entries(roles).filter(([k]) => k !== 'skill')));
 const EMBER = Object.freeze({
   husk: Object.freeze({ change: 'Die', end: 'Revive', next: 'revived', roles: clipSet('Idle_2', 'Move_2', 'Die_2') }),
   revived: Object.freeze({ change: null, roles: Object.freeze({}) }),
@@ -416,7 +424,8 @@ export const FORMS = Object.freeze({
     husk: Object.freeze({ change: 'A_Die', end: 'B_Revive', next: 'revived', roles: clipSet('B_Idle', 'B_Move', 'B_Die') }),
     revived: Object.freeze({ change: null, roles: Object.freeze({}) }),
   }),
-  enemy_1525_blkswb: rebirth('Revive1', 'Revive2', 'Revive3', clipSet('B_Idle', 'B_Move', 'B_Die', 'B_Attack')),
+  // 锏's second form keeps the skill slot's clip (anims.skills: CircleAttack2 B_Skill2 — tools/assets/spine.mjs MACE_SKILLS)
+  enemy_1525_blkswb: rebirth('Revive1', 'Revive2', 'Revive3', withoutSkill(clipSet('B_Idle', 'B_Move', 'B_Die', 'B_Attack'))),
   enemy_1535_wlfmster: rebirth('A_revive_1', 'A_revive_2', 'A_revive_3', clipSet('B_Idle', 'B_Move', 'B_Die', 'B_Attack')),
   enemy_1539_reid: rebirth('Revive_Begin', 'Revive_Loop', 'Revive_End'),
   // 重生 on the skeleton's own Revive clip (PR #275 by @xcdoge; content/enemies/leaders.js kitUglyThing / kitXi): 巨大的丑东西
@@ -643,6 +652,7 @@ export class UnitView {
     // the skill slot whose Spine clip the unit shows (DESIGN §16): an ally's equipped skill; an enemy's cast slot when the
     // sim reports one (`cast` event, setSkillSlot — a multi-skill boss's Skill_01..04, PR #275)
     this.skillIndex = Number.isInteger(info.skillIndex) ? info.skillIndex : null;
+    this._cast = null;            // the last `cast` of a strike slot (onCast): { index, t }
     this.prep = !!opts.prep;
     this.lodIdle = opts.lod === 'idle';
     this.culled = false;          // outside the viewport this frame (not animated, not drawn)
@@ -1369,7 +1379,10 @@ export class UnitView {
       this.lungeDir.x = dx / len; this.lungeDir.y = dy / len;
     }
     this.lunge = 1;
-    if (this.actor) this.actor.attack(this.atkInterval, once); // game seconds: the actor's clock runs in game time
+    if (this.actor) {
+      this.actor.castStrike?.(this._takeStrike(now));
+      this.actor.attack(this.atkInterval, once); // game seconds: the actor's clock runs in game time
+    }
     if (this.imp) this.imp.dirty = true;
   }
 
@@ -1378,10 +1391,12 @@ export class UnitView {
    * so the strike frame lines up with the attack. True once started (then stop calling for that attack). `kind` = the
    * 'atk' projKind (a one-off cast winds up at the clip's own speed).
    */
-  windUp(lead, kind) {
+  windUp(lead, kind, castSlot = null) {
     if (!this.alive || !this.actor || !this.spineReady) return false;
     this._attackForm(kind);
+    this.actor.castStrike?.(this._strikeClip(castSlot));
     const ok = this.actor.windUp(this.atkInterval, lead, !!PROJ[kind]?.once);
+    if (!ok) this.actor.castStrike?.(null);
     if (ok && this.imp) this.imp.dirty = true;
     return ok;
   }
@@ -1402,6 +1417,72 @@ export class UnitView {
     if (!Number.isInteger(index) || index < 0 || index === this.skillIndex) return;
     this.skillIndex = index;
     if (this.actor) this.actor.setSkillIndex(index);
+  }
+
+  /**
+   * The sim's `cast` event at render time `now` (render/app.js, after setSkillSlot): a slot whose clip is `strike`
+   * (tools/assets/spine.mjs PREFAB_SPINE_ROLES: an attack-class skill the sim casts in its attack's `before` hook —
+   * 杰斯顿·威廉姆斯, “碎铳之簧”) is the attack of the same tick, so the next attack (onAttack, within STRIKE_WINDOW) plays that
+   * clip in place of the attack clip. Any other slot changes nothing here.
+   */
+  onCast(index, now, turnClip = null) {
+    this._cast = this._strikeClip(index) ? { index, t: now } : null;
+    if (turnClip != null) this._turnCast(index, turnClip);
+  }
+
+  /**
+   * The clip of an attack-class skill cast in the attack's turn (the sim's ['cast', id, slot, dur, clip]; enemies.js
+   * attackTurnSkill — no 'atk' comes with it): the slot's clip (`anims.skills[slot]`, else the primary `anims.skill`) when
+   * its official ability names one (`clip` > 0: the §35.29 / §35.52 tables, 昆图斯's), else null — the attack clip
+   * [ASSUMED: an attack-class ability with an empty `_animKey` shows the unit's attack; DESIGN §35.57].
+   */
+  _turnClip(index, clip) {
+    if (!(clip > 0) || !this.actor) return null;
+    const an = this.actor.entry?.anims || {};
+    const c = an.skills?.[String(index)] || an.skill;
+    return c && this.actor.has?.(c.loop) ? c : null;
+  }
+
+  /**
+   * An attack-turn cast is rendered now (onCast): its clip plays once at its own speed in place of the attack — from
+   * its strike frame unless the look-ahead wound it up (windUpCast) —, or the attack clip in the attack's rhythm when
+   * the ability names none (DESIGN §35.57). Until then the swing it replaced showed nothing (the model stood idle).
+   */
+  _turnCast(index, clip) {
+    if (!this.alive || !this.actor) return;
+    this._pendingDeployElapsed = null;
+    const c = this._turnClip(index, clip);
+    this.actor.castStrike?.(c);
+    this.actor.attack(this.atkInterval, !!c);
+    if (this.imp) this.imp.dirty = true;
+  }
+
+  /**
+   * An attack-turn cast is `lead` game s ahead in the snapshot buffer (render/app/windup.js): wind its clip up so the
+   * strike frame lands with the cast, as windUp does for an attack. True once started.
+   */
+  windUpCast(lead, index, clip) {
+    if (!this.alive || !this.actor || !this.spineReady) return false;
+    const c = this._turnClip(index, clip);
+    this.actor.castStrike?.(c);
+    const ok = this.actor.windUp(this.atkInterval, lead, !!c);
+    if (!ok) this.actor.castStrike?.(null);
+    if (ok && this.imp) this.imp.dirty = true;
+    return ok;
+  }
+
+  /** The `strike` clip of skill slot `index` in this unit's model (`anims.skills`), else null. */
+  _strikeClip(index) {
+    if (!Number.isInteger(index) || index < 0) return null;
+    const c = this.actor?.entry?.anims?.skills?.[String(index)];
+    return c && c.strike ? c : null;
+  }
+
+  /** The strike clip of the cast this attack (at `now`) makes — every target's 'atk' of that tick —; null for a plain attack. */
+  _takeStrike(now) {
+    const c = this._cast;
+    if (c && now - c.t > STRIKE_WINDOW) this._cast = null;
+    return c && now - c.t >= 0 && now - c.t <= STRIKE_WINDOW ? this._strikeClip(c.index) : null;
   }
 
   onDeploy() {

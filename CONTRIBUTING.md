@@ -84,6 +84,10 @@ SIM_E2E=1 node --test 'test/sim/*.browser.test.js'               # 浏览器里�
 - 规则改了，相关文档一起改：`docs/design/` 里对应的规则（章节号与文件见 docs/DESIGN.md 的索引）、`docs/history/` 里当前版本的
   修订记录、docs/SIM.md、docs/META.md、docs/DATA.md 等。
   `test/docs-consistency.test.js` 固定了文档里的一些句子，改文档后跑一下。
+- JavaScript 用两个空格缩进，不要引入 Tab。
+- 战斗结算：内容代码调用 `battle` 上的操作（`dealDamage`、`dealElementDamage`、`dealHPLose`、`heal`、`healElement`），
+  公共辅助函数只从 `server/sim/attack.js` 导入，不直接引用 `server/sim/attack/` 的内部文件（ESLint 会报错）。简短示例见
+  [server/sim/AGENTS.md](server/sim/AGENTS.md)，阶段与钩子的完整约定见 docs/SIM.md §4。
 - 代码和注释用英文；玩家文档（README、PLAYING、DEPLOY）用简体中文，技术文档用英文。界面上的文字写中文并用 `t('…')`
   包起来，英文放进 `public/i18n/en.json`（[docs/I18N.md](docs/I18N.md)）。
 - 翻译成新的语言：一个语言就是 `public/i18n/` 里的一个文件，不用改代码。`node tools/i18n.mjs template <语言代码>` 生成骨架，
@@ -128,6 +132,10 @@ SIM_E2E=1 node --test 'test/sim/*.browser.test.js'               # 浏览器里�
   document (docs/DESIGN.md is its index: the rules in `docs/design/`, the per-release revisions in `docs/history/`).
   Do not paste copyrighted game text at length (quote briefly, cite) and never commit game assets.
   Never hand-edit `data/*.json`: change `tools/build-data.mjs`, rebuild with `--offline`, compare the JSON.
+- **Code**: two-space indentation, no tabs. Battle content calls the settlement operations on `battle` (`dealDamage`,
+  `dealElementDamage`, `dealHPLose`, `heal`, `healElement`) and imports helpers only from `server/sim/attack.js`, never
+  from `server/sim/attack/` (ESLint refuses it); short examples in [server/sim/AGENTS.md](server/sim/AGENTS.md), the
+  stages and hooks in docs/SIM.md §4.
 - **Commits and pull requests**: one change per pull request, one operator per kit pull request. A one-line commit
   message saying what changed, with the issue number; no attribution trailers such as `Co-Authored-By:` or
   `Generated with …` (the maintainers' convention) — merged pull requests are credited in the CHANGELOG. Describe the

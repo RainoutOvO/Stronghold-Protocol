@@ -80,7 +80,7 @@ export const ELEMENTS = Object.freeze(['burn', 'neural', 'necrosis', 'apoptosis'
  * Burst damage is 无来源 (PRTS 元素): no damage-dealt multiplier or penetration of the unit that filled the gauge.
  * `duration` = the burst's 爆发冷却 (PRTS 元素 table "持续时间": 10 s, 凋亡 15 s, 侵蚀 on enemies 8 s — the operators'
  * 侵蚀 burst has its 10 s cooldown too): while it runs NO element of the unit fills or recovers, and when it ends every
- * gauge of the unit resets (damage.js).
+ * gauge of the unit resets (attack/element.js).
  * `necrosis` keeps the engine's earlier invented burst (no official counterpart) for legacy content.
  */
 export const ELEMENT = Object.freeze({
@@ -107,7 +107,7 @@ export const ELEMENT = Object.freeze({
 });
 /**
  * Official element order (PRTS 元素: SANITY 1 神经, WATER 2 侵蚀, FIRE 3 灼燃, DARK 4 凋亡; the legacy `necrosis` last):
- * the tie-break of the "当前损伤元素" a unit shows — the fullest gauge, then the lower id (damage.js elementView).
+ * the tie-break of the "当前损伤元素" a unit shows — the fullest gauge, then the lower id (attack/element.js elementView).
  */
 export const ELEMENT_ORDER = Object.freeze(['neural', 'erosion', 'burn', 'apoptosis', 'necrosis']);
 /** 麻痹 (ba.palsy): each stack cancels one normal attack of an enemy; at most 3 stacks, lasts until consumed. */

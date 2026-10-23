@@ -1460,7 +1460,11 @@ index.json — version 1 and the version 2 fields (§33.12, §33.15; Phase 3c) �
     effects at the fx's tile for the area's time (the projectile stays where it lands: AuraHitBehaviour); 异客 S3's
     strikes `pasngr_skill_03_hit`; 溯光星源 S2's links the link projectile's hit on each pulled enemy; 焰影苇草 S2's
     fire strikes `reed2_skill_02_hit`; 蕾缪安 S3's lock the aim projectile's crosshair (`lemuen_skill_03_crosshair_range`
-    / `_02`, 1.5 s without a hold [ASSUMED])
+    / `_02`), held as `hold: 'lock'` since 0.3.2 (PR #862, history §35.39): on the locked enemy, at its last spot once
+    it is gone, until the bombard of the shell that claimed it (a `bombardShell` takes her nearest free lock within
+    `LOCK_SHELL_NEAR` 3); a lock no shell claims ends `LOCK_T` 5 s after the last sign of her S3, locks with no shell
+    end when she is knocked out, at most `MAX_LOCKS` 48, and a tier switch clears them (the 5 s / 48 / 3 are carried
+    over from render/fx/locks.js [ASSUMED]; before, the kit's `hold: 1` flag stopped each crosshair after 1 s)
     and her bombard the attack projectile's reached hit. Since 0.3.1 (history §34.5): 号角 S1's flare (the light
     projectile `projectile_chr_horn_s1_light`'s reached `horn_skill_01_hit_02_buff` / `_02`), and the 自选 pick 琴柳's
     flags — S2 `sleach_skill_02_flag_01` with its ground, S3 `sleach_skill_03_flag_01` with its range loops and its strike

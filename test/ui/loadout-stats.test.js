@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { unscaled } from '../helpers/uiSize.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p) => readFileSync(path.join(ROOT, p), 'utf8');
@@ -267,7 +268,7 @@ test('place in the detail: after the skills, before the modules; the first .lo-s
 });
 
 test('css: the section reuses the card\'s .dstats / .drange / .rgrid, sized for the overlay with px floors (readable at 1 rem = 40 px), the range box may wrap under the numbers', () => {
-  const css = read('public/css/screens/loadout.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const css = unscaled(read('public/css/screens/loadout.css')).replace(/\/\*[\s\S]*?\*\//g, '');
   const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
   const mine = rules.filter((r) => /\.lo-sec--stats|\.lo-stats__cap|\.lo-minfo--kit/.test(r.sel));
   assert.ok(mine.length >= 8, 'the stats rules exist');

@@ -4,7 +4,10 @@ export function decide(o) {
   if (o.type === 'hello') return { v: o.v, id: o.id, type: 'hello', knowledgeVersion: o.knowledge.version };
   if (o.context.mode === 'plan') {
     const choice = o.context.kind !== 'prep' ? o.digest.actions.find(a => ['g.band', 'g.choice', 'g.offer'].includes(a.intent.t))?.id : undefined;
-    return { v: o.v, id: o.id, plan: { ...(choice ? { choice } : {}), economy: { maxRefreshes: 8 } } };
+    // §35.14: add concrete item IDs to buy; freezeSearch opts into searching on the last refresh fund.
+    // A reasoned { level, holdLevel: true, why } holds only this prep, including a one-round delay.
+    return { v: o.v, id: o.id, plan: { ...(choice ? { choice } : {}),
+      economy: { maxRefreshes: 8, freezeSearch: false }, items: { buy: [] } } };
   }
   const p = o.private, pub = o.public;
   let intent;

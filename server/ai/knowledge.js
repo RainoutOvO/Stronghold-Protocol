@@ -3,14 +3,33 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { applyFileOverlay } from '../../shared/i18nData.js';
+import { DEFAULT_VERSION, versionOfData } from '../../shared/versions.js';
 import { deepFreeze } from '../data.js';
 import { GameData } from '../match/gamedata.js';
+import { buildPlaybook } from './playbook.js';
 
 const hash = s => createHash('sha256').update(s).digest('hex');
 const stable = x => Array.isArray(x) ? x.map(stable) : x && typeof x === 'object'
   ? Object.fromEntries(Object.keys(x).sort().map(k => [k, stable(x[k])])) : x;
 // [ASSUMED] Short-form catalogue text retains at most 500 characters per effect.
 const short = s => String(s || '').replace(/<@[^>]*>|<\/>/g, '').slice(0, 500);
+// Ability rows in data/enemies.json are {text, textRaw, format} objects (enemy_handbook ability text).
+// Joining them with String() wrote "[object Object]" into the pack. Keep readable text fields only.
+export function effectText(value) {
+  const bits = [];
+  const walk = v => {
+    if (v == null || v === false) return;
+    if (typeof v === 'string' || typeof v === 'number') { bits.push(String(v)); return; }
+    if (Array.isArray(v)) { for (const x of v) walk(x); return; }
+    if (typeof v === 'object') {
+      if (typeof v.text === 'string') { bits.push(v.text); return; }
+      if (typeof v.desc === 'string') { bits.push(v.desc); return; }
+      for (const x of Object.values(v)) if (typeof x === 'string') bits.push(x);
+    }
+  };
+  walk(value);
+  return bits.join(' ').replace(/\s+/g, ' ').trim();
+}
 const cache = new WeakMap();
 let playing;
 // docs/PLAYING.md is absent from the Docker image (Dockerfile copies only the plugin docs): an install without it
@@ -50,7 +69,9 @@ export function knowledgePack(data, { language = 'zh-CN', modeId, rules = {}, of
   let entries = cache.get(data);
   if (!entries) { entries = new Map(); cache.set(data, entries); }
   if (entries.has(key)) return entries.get(key);
-  if (!overlay && language !== 'zh-CN') {
+  // the fixed overlay is keyed by default-data record ids: another official version's data (config.version) keeps its
+  // Chinese names until it has its own overlay
+  if (!overlay && language !== 'zh-CN' && !data?.config?.version) {
     try { overlay = JSON.parse(readFileSync(new URL(`../../data/i18n/${language}.json`, import.meta.url), 'utf8')); }
     catch { overlay = {}; }
   }
@@ -62,18 +83,28 @@ export function knowledgePack(data, { language = 'zh-CN', modeId, rules = {}, of
     return { id, name: r.name || id, nameZh: raw.name || id, ...fn(r, id) };
   });
   const copies = gd.visibleChess.map(id => ({ tier: gd.tierOf(id), count: gd.poolCopies(id) }));
+  const gameVersion = versionOfData(data);
   const payload = {
-    schema: 'sp-knowledge/1', language, modeId, contentId, sources: ['docs/PLAYING.md §1–§7', 'docs/DATA.md', 'excel/activity_table.json autoChessData',
+    schema: 'sp-knowledge/1', language, modeId, contentId,
+    // another official version's data (DESIGN §35.23): its registry id; the default pack (and its hash) has no key
+    ...(gameVersion !== DEFAULT_VERSION ? { gameVersion } : {}),
+    sources: ['docs/PLAYING.md §1–§7', 'docs/DATA.md', 'excel/activity_table.json autoChessData',
       'excel/character_table.json', 'excel/skill_table.json', 'excel/enemy_handbook_table.json'], playingHash: hash(source),
     rulesSummary: summaries[language] || summaries.en,
     // Retain the source economy table as Chinese reference, alongside localized prose and numeric rules.
     playingEconomy: source.split('## 2.')[1]?.split('## 3.')[0]?.split('\n').filter(line => line.startsWith('|')).join('\n') || '',
     roomRules: rules,
+    playbook: buildPlaybook(data, { modeId }),
     economy: { incomeByRound: Array.from({ length: gd.lastRound }, (_, i) => gd.income(i + 1)),
       exp: null, upgradePrices: gd.upgradePrices(), upgradeDiscountPerRound: 1, refreshPrice: gd.refreshPrice,
       interestFormula: 'carries ? min(max, floor(gold / capital) * interest) : 0; at round start',
       upgradeFormula: 'max(0, upgradeBase(level) - round starts since last upgrade); no round-1 discount',
       carryBands: gd.leftoverKeptBands, deployCap: gd.deployCap, benchSize: gd.benchSize, equipCap: gd.equipPerChess,
+      fundsRule: 'All remaining prep funds expire unless band.id is in carryBands (including inherited plugin bands). Carry bands keep funds and use their own interest rule; pending next-round grants are not spendable now.',
+      refreshRule: 'Pay refreshPrice, or consume one free refresh. A manual refresh replaces ALL slots and cancels freezing. Do not refresh away a wanted unaffordable operator.',
+      freezeRule: 'g.freeze is free and toggles all unsold slots. Frozen unsold slots survive the next round roll; sold/unfrozen slots roll normally. This is unrelated to holding shop level.',
+      sellRule: 'Operators refund their catalogue sellValue (normally 1, including elites), not their purchase price; sale traits may modify proceeds. Items cannot be sold. Buying needs a free regular bench slot, even for an immediate merge.',
+      advice: '[ASSUMED] Maintainer 2026-10-19: level is a floor, then follow legacy development. Only holdLevel:true with economy.why caps leveling. Spend expiring funds on wanted/useful operators; freeze unaffordable targets; refresh while a purchase remains possible; bank cheap spare operators for later sale. Refresh/reserve preferences must not strand spendable expiring funds. Justify lagging the recommended/data-derived and measured legacy curves in why.',
       shop: Array.from({ length: gd.maxShopLevel }, (_, i) => ({ level: i + 1, slots: gd.shopSlots(i + 1),
         eligibleMaxTier: i + 1,
         // Pristine public catalogue, BEFORE random bans and purchases; never actual live match odds.
@@ -83,16 +114,17 @@ export function knowledgePack(data, { language = 'zh-CN', modeId, rules = {}, of
       // PRTS help / pool.js: there is no fixed tier-odds table. Never reveal the live shared stock here.
       shopOdds: 'P(id) = remaining eligible copies of id / sum of remaining eligible copies; tier <= shop level. Item tier shares follow this pool, then eligible item stock. No fixed odds.',
     },
-    bonds: rows('bonds', r => ({ thresholds: r.thresholds, countMode: r.countMode, countsGoldenOnly: r.countsGoldenOnly,
+    bonds: rows('bonds', r => ({ core: !!r.isCore, thresholds: r.thresholds, countMode: r.countMode, countsGoldenOnly: r.countsGoldenOnly,
       thresholdTemplate: r.thresholdTemplate, effect: short(r.desc), layers: r.bb })),
-    operators: rows('chess', (r, id) => ({ tier: r.tier, cost: gd.chessPrice(id), elite: !!r.isGolden,
+    operators: rows('chess', (r, id) => ({ tier: r.tier, cost: gd.chessPrice(id), sellValue: gd.sellPrice(id), elite: !!r.isGolden,
+      baseId: gd.baseIdOf(id), poolEligible: gd.visibleChess.includes(id),
       class: r.profession, branch: r.subProfessionId, bonds: r.bonds, mergeCopies: gd.mergeCount(id),
       skill: { name: r.skill?.name, effect: short(r.skill?.desc), spCost: r.skill?.spCost },
       skills: (r.skills || []).map(s => ({ index: s.index, name: s.name, effect: short(s.desc), isDefault: s.isDefault })),
       traits: (r.garrisonIds || []).map(id => short(localized.garrisons[id]?.desc)) })),
     items: rows('items', r => ({ tier: r.tier, cost: r.price, kind: r.kind, effect: short(r.desc), requiresBondId: r.requiresBondId })),
-    bands: rows('bands', (r, id) => ({ lp: r.totalHp, effect: short(r.desc), interest: interestRule(gd, id) })),
-    enemies: rows('enemies', r => ({ effect: short([r.desc, ...(r.abilities || [])].join(' ')), stats: r.stats, inactiveIn: r.inactiveIn })),
+    bands: rows('bands', (r, id) => ({ lp: r.totalHp, effect: short(r.desc), carriesFunds: gd.leftoverKeptBands.includes(id), interest: interestRule(gd, id) })),
+    enemies: rows('enemies', r => ({ effect: short(effectText([r.desc, ...(r.abilities || [])])), stats: r.stats, inactiveIn: r.inactiveIn })),
     bosses: rows('bosses', r => ({ enemyKey: r.enemyKey, hpByDifficulty: r.bloodPoint, notes: r.abilities })),
     difficulties: Object.entries(data.config?.modes || {}).map(([id, r]) => ({ id, difficulty: r.difficulty,
       bossRound: r.bossRound, hiddenRound: r.hiddenRound, enemyScale: r.enemyScale, inactiveEnemies: r.inactiveEnemyKeys })),

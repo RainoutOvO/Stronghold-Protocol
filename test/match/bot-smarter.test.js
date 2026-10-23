@@ -243,6 +243,12 @@ test('items: 信标 on a bench single; both 博士投影 on a normal operator ev
   const fresh = (tier) => Object.values(DATA.chess).find((c) => c.visible && !c.isGolden && c.tier === tier && m.pool.left(c.chessId) >= 3 && !owned.has(c.chessId)).chessId;
   for (const p of ps.hand) if (p && p.kind === 'chess') ps.returnCopies(p);
   ps.hand.fill(null);
+  // a bot may deploy two copies of one operator (§35.63 boards): keep one, so the hand pair below is the only pair
+  const seen = new Set();
+  for (const [key, p] of [...ps.board.entries()]) {
+    if (p.kind !== 'chess') continue;
+    if (seen.has(m.gd.baseIdOf(p.id))) { ps.returnCopies(p); ps.board.delete(key); } else seen.add(m.gd.baseIdOf(p.id));
+  }
   // the highest-tier deployed operator becomes an elite: the most valuable piece on the board
   const [topKey, top] = [...ps.board.entries()].filter(([, p]) => p.kind === 'chess' && !m.gd.isGolden(p.id))
     .sort((a, b) => m.gd.chess(b[1].id).tier - m.gd.chess(a[1].id).tier || a[1].uid - b[1].uid)[0];
@@ -505,7 +511,9 @@ test('bench shed: the buy loop never sells a piece that came this prep (it used 
   PlayerState.prototype.sell = function (uid) {
     const loc = this.find(uid);
     const p = loc && loc.piece;
-    if (p && p.boughtRound === this.m.round && /buyLoopSteps/.test(new Error().stack)) shed.push(`${p.id} R${this.m.round}`);
+    // §35.63's layer trade (tradeOnce) sells a 获得时 layer unit right after buying it on purpose; the shed never does
+    const stack = new Error().stack;
+    if (p && p.boughtRound === this.m.round && /buyLoopSteps/.test(stack) && !/tradeOnce/.test(stack)) shed.push(`${p.id} R${this.m.round}`);
     return oSell.call(this, uid);
   };
   try {

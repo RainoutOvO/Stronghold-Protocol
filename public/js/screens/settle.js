@@ -25,8 +25,9 @@ import { store, useStore, emptyMatch } from '../store.js';
 import { audio } from '../audio.js';
 import { sentText } from '../ui/lang.js';
 import { reducedMotion } from '../ui/device.js';
-import { recordId, selfRowOf, loadStats, isModdedRecord } from '../ui/stats.js';
-import { UnofficialMark, isModdedRoom } from '../ui/pluginTag.js';
+import { recordId, selfRowOf, loadStats, isModdedRecord, recordsOfSeason } from '../ui/stats.js';
+import { UnofficialMark, VersionTag, isModdedRoom } from '../ui/pluginTag.js';
+import { shownVersion, seasonOf } from '../versions.js';
 import { TestMark } from '../ui/testConsole.js';
 import { ResultView, resultBonds } from './result.js';
 import { DIFFICULTY_NAMES, DIFFICULTY_COLORS } from '../../../shared/constants.js';
@@ -113,10 +114,13 @@ export function dailyPointsFor(roundsPassed, table) {
  * a day whose matches reached the daily goal earned the bonus once ([ASSUMED] the bonus is 卫戍认证 too, so it counts
  * toward the level; the day is the local one). `counted` false (gameplay plugins): this match earns
  * nothing. Returns the totals before and after this match, its gain and bonus, my trophies so far, today's daily goal.
+ * `season` (DESIGN §35.23): only the records of that activity count (null: every record).
  * @param {any[]} records
- * @param {{ id?: string|null, gain?: number, rounds?: number, trophies?: number, at?: number, counted?: boolean, rewards?: any }} cur
+ * @param {{ id?: string|null, gain?: number, rounds?: number, trophies?: number, at?: number, counted?: boolean, rewards?: any, season?: string|null }} cur
  */
-export function levelProgress(records, { id = null, gain = 0, rounds = 0, trophies = 0, at: now = Date.now(), counted = true, rewards = null } = {}) {
+export function levelProgress(records, { id = null, gain = 0, rounds = 0, trophies = 0, at: now = Date.now(), counted = true, rewards = null, season = null } = {}) {
+  // one season's records (DESIGN §35.23: 第一期 and 第二期 each have their own 卫戍认证 table — ui/stats.js recordsOfSeason)
+  records = recordsOfSeason(records, season);
   const daily = rewards?.daily && rewards.daily.need > 0 ? rewards.daily : null;
   const table = rewards?.baseByRoundsPassed;
   const reset = Number.isFinite(daily?.resetHour) ? daily.resetHour : 4;
@@ -439,7 +443,7 @@ function SettleTestMark({ res }) {
   return html`<span class="settle__test" data-testid="settle-test"><${TestMark} /> ${t('测试对局')}${Number.isInteger(res.testActions) ? html` · ${t('测试指令 {n} 次', { n: res.testActions })}` : null}</span>`;
 }
 
-function SelfPage({ r, res, raw, self, gd, prog, content, onNext }) {
+function SelfPage({ r, res, raw, self, gd, prog, content, onNext, version = null }) {
   const cleared = rowCleared(raw, self, r.victory);
   const [leaving, setLeaving] = useState(false);
   const nextRef = useRef(null);
@@ -469,7 +473,7 @@ function SelfPage({ r, res, raw, self, gd, prog, content, onNext }) {
       <div class="sself__fx" aria-hidden="true"></div>
       <${Logo} />
       <div class="sself__band">${self.bandId ? html`<${BandIcon} bandId=${self.bandId} size="lg" />` : html`<${PlayerAvatar} player=${self} self=${true} />`}<i aria-hidden="true"></i></div>
-      <div class="sself__mode"><${ModePill} r=${r} /><${UnofficialMark} room=${content ? { content } : null} class="sself__modmark" /><${SettleTestMark} res=${res} /></div>
+      <div class="sself__mode"><${ModePill} r=${r} /><${UnofficialMark} room=${content ? { content } : null} class="sself__modmark" /><${VersionTag} version=${version} class="sself__vertag" /><${SettleTestMark} res=${res} /></div>
       <${SettleTitle} class="sself__title">${cleared ? t('模拟完成') : t('模拟中断')}</${SettleTitle}>
       <div class="sself__rounds"><span>${t('通过回合')}</span><b class="num">${rounds}</b></div>
       ${medals.length ? html`<div class="sself__medals">${medals.map((m, i) => html`<${Medal} key=${m.kind} m=${m} i=${i} />`)}</div>` : null}
@@ -545,7 +549,7 @@ function TeamCard({ p, i, gd, self, victory, raw }) {
   </article>`;
 }
 
-function TeamPage({ r, res, gd, myId, at: when, content, backLabel, onBack, onDetail }) {
+function TeamPage({ r, res, gd, myId, at: when, content, backLabel, onBack, onDetail, version = null }) {
   const rounds = useCountUp(r.roundsPassed, { ms: 900, delay: 450 });
   const backRef = useRef(null);
   const rawOf = (pid) => (Array.isArray(res?.players) ? res.players.find((x) => x && x.playerId === pid) : null) || null;
@@ -566,7 +570,7 @@ function TeamPage({ r, res, gd, myId, at: when, content, backLabel, onBack, onDe
       </div>
       <div class="settle__barbg steam__barbg" aria-hidden="true"><${Sprite} k="settle/bottom_bg" /></div>
       <div class="steam__outcome">
-        <span class="steam__tags"><${ModePill} r=${r} /><${UnofficialMark} room=${content ? { content } : null} /><${SettleTestMark} res=${res} /></span>
+        <span class="steam__tags"><${ModePill} r=${r} /><${UnofficialMark} room=${content ? { content } : null} /><${VersionTag} version=${version} /><${SettleTestMark} res=${res} /></span>
         <${SettleTitle} as="b" class="steam__title">${r.victory ? t('模拟完成') : t('模拟中断')}</${SettleTitle}>
       </div>
       <div class="steam__rounds"><span>${t('同盟通过回合')}</span><b class="num">${rounds}</b></div>
@@ -591,7 +595,7 @@ function TeamPage({ r, res, gd, myId, at: when, content, backLabel, onBack, onDe
  * `content`: the room's content (room.state.content) — gameplay plugins mark the match unofficial (DESIGN §32.6).
  * @param {{ res: any, pub?: any, myId?: string|null, content?: any, backLabel: string, onBack: () => void }} props
  */
-export function SettleFlow({ res, pub = null, myId = null, content = null, backLabel, onBack }) {
+export function SettleFlow({ res, pub = null, myId = null, content = null, backLabel, onBack, version = null }) {
   const gd = useGameData();
   const r = normalizeResult(res, pub);
   const self = r.players.find((p) => p.playerId === myId) || null;
@@ -609,17 +613,17 @@ export function SettleFlow({ res, pub = null, myId = null, content = null, backL
   const isTest = res?.test === true;
   const prog = useMemo(() => (self ? { ...levelProgress(ctx.records, {
     id: ctx.id, gain: self.reward, rounds: self.roundsPassed, trophies: self.trophies, at: ctx.at,
-    counted: !isTest && !isModdedRoom(content ? { content } : null), rewards: gd.config?.rewards,
+    counted: !isTest && !isModdedRoom(content ? { content } : null), rewards: gd.config?.rewards, season: seasonOf(version),
   }), test: isTest } : null), [gd.config]);
   const rootRef = useRef(null);
   useStageFit(rootRef);
   const lose = self ? !rowCleared(rawSelf, self, r.victory) : !r.victory;
   return html`<div ref=${rootRef} class=${cx('screen', 'result', 'settle', `settle--${page}`)} data-testid="settle">
     ${page === 'intro' ? html`<${SettleIntro} players=${r.players} myId=${myId} lose=${lose} onDone=${() => setPage('self')} />` : null}
-    ${page === 'self' ? html`<${SelfPage} r=${r} res=${res} raw=${rawSelf} self=${self} gd=${gd} prog=${prog} content=${content} onNext=${() => setPage('team')} />` : null}
-    ${page === 'team' ? html`<${TeamPage} r=${r} res=${res} gd=${gd} myId=${myId} at=${ctx.at} content=${content} backLabel=${backLabel} onBack=${onBack} onDetail=${() => setDetail(true)} />` : null}
+    ${page === 'self' ? html`<${SelfPage} r=${r} res=${res} raw=${rawSelf} self=${self} gd=${gd} prog=${prog} content=${content} version=${version} onNext=${() => setPage('team')} />` : null}
+    ${page === 'team' ? html`<${TeamPage} r=${r} res=${res} gd=${gd} myId=${myId} at=${ctx.at} content=${content} version=${version} backLabel=${backLabel} onBack=${onBack} onDetail=${() => setDetail(true)} />` : null}
     ${detail ? html`<div class="settle__detail" data-testid="settle-detail">
-      <${ResultView} res=${res} pub=${pub} myId=${myId} quiet=${true} slot=${false} content=${content} backLabel=${t('返回')} onBack=${() => setDetail(false)} /></div>` : null}
+      <${ResultView} res=${res} pub=${pub} myId=${myId} quiet=${true} slot=${false} content=${content} version=${version} backLabel=${t('返回')} onBack=${() => setDetail(false)} /></div>` : null}
   </div>`;
 }
 
@@ -634,7 +638,9 @@ export function ResultScreen() {
   const myId = useStore((s) => s.me.playerId);
   const hasRoom = useStore((s) => !!s.room);
   const content = useStore((s) => s.room?.content ?? null);
+  // the official version the match played (DESIGN §35.23): the room's, or the last room's once it is gone
+  const version = useStore(shownVersion);
   const back = () => store.set({ match: emptyMatch() });
   if (!res) return html`<div class="screen result settle" data-testid="settle-wait"><${Spinner} size="lg" /></div>`;
-  return html`<${SettleFlow} res=${res} pub=${pub} myId=${myId} content=${content} backLabel=${hasRoom ? t('返回同盟') : t('返回大厅')} onBack=${back} />`;
+  return html`<${SettleFlow} res=${res} pub=${pub} myId=${myId} content=${content} version=${version} backLabel=${hasRoom ? t('返回同盟') : t('返回大厅')} onBack=${back} />`;
 }

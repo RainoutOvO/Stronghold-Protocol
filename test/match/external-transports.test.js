@@ -90,12 +90,44 @@ for (const script of ['process.exit(1)', 'process.stdin.on("data",()=>process.st
   });
 }
 
-test('stdio abort rejects all in-flight requests and kills the child', async t => {
-  const c = new StdioAI(stdioConfig([process.execPath, '-e', 'process.stdin.resume()']));
+// §35.62: replies after `delay` ms, in any order; the child stays up between requests.
+const ECHO = 'let b="";process.stdin.on("data",d=>{b+=d;let i;while((i=b.indexOf("\\n"))>=0){const o=JSON.parse(b.slice(0,i));b=b.slice(i+1);'
+  + 'setTimeout(()=>process.stdout.write(JSON.stringify({id:o.id,done:true})+"\\n"),o.delay||0)}})';
+
+test('stdio abort cancels only that request; its late reply is ignored and the child keeps serving', async t => {
+  const c = new StdioAI(stdioConfig([process.execPath, '-e', ECHO]));
   t.after(() => c.close());
   const a = new AbortController();
-  const results = Promise.allSettled([c.request(observation, a.signal), c.request({ ...observation, id: 'b' }, new AbortController().signal)]);
+  const slow = c.request({ ...observation, id: 'slow', delay: 150 }, a.signal);
+  const other = c.request({ ...observation, id: 'other', delay: 300 }, new AbortController().signal);
+  const child = c.child;
   a.abort();
-  assert.ok((await results).every(r => r.status === 'rejected'));
-  assert.equal(c.pending.size, 0);
+  await assert.rejects(slow);
+  assert.equal(c.child, child);
+  assert.equal((await other).id, 'other');
+  assert.equal(c.child, child, 'the late reply for the cancelled id did not count as a protocol error');
+  assert.equal(c.abandoned.size, 0);
+  assert.equal((await c.request({ ...observation, id: 'next' }, new AbortController().signal)).id, 'next');
+});
+
+test('stdio timeout cancels a slow request while the child answers others, and kills a silent child', async t => {
+  const c = new StdioAI({ ...stdioConfig([process.execPath, '-e', ECHO]), timeoutMs: 200 });
+  t.after(() => c.close());
+  const child = c.child ?? (c.start(), c.child);
+  const slow = c.request({ ...observation, id: 'slow', delay: 400 }, new AbortController().signal);
+  const quick = c.request({ ...observation, id: 'quick', delay: 20 }, new AbortController().signal);
+  assert.equal((await quick).id, 'quick');
+  await assert.rejects(slow);
+  assert.equal(c.child, child);
+  const silent = new StdioAI({ ...stdioConfig([process.execPath, '-e', 'process.stdin.resume()']), timeoutMs: 100 });
+  t.after(() => silent.close());
+  await assert.rejects(silent.request(observation, new AbortController().signal));
+  assert.equal(silent.child, null);
+});
+
+test('stdio reply with an ID that was never sent is a protocol error', async t => {
+  const c = new StdioAI(stdioConfig([process.execPath, '-e', 'process.stdin.once("data",()=>process.stdout.write(JSON.stringify({id:"zzz"})+"\\n"))']));
+  t.after(() => c.close());
+  await assert.rejects(c.request(observation, new AbortController().signal));
+  assert.equal(c.child, null);
 });

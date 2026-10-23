@@ -87,7 +87,7 @@ export class Unit {
     this.aggroSeq = 0;          // 仇恨 order: usually deploySeq; initial summons and prepared map characters are exceptions
     this.spawnSeq = 0;
     this.elem = { burn: 0, neural: 0, necrosis: 0, apoptosis: 0, erosion: 0 };
-    this.burstPending = null;   // { [element]: true } while that element's burst resolves (damage.js burstLocked)
+    this.burstPending = null;   // { [element]: true } while that element's burst resolves (attack/element.js burstLocked)
     this.tags = new Set(init.tags || []);
     this.mem = {};              // free scratch space for content (per unit)
     // a countdown summon's life on the field ({ from, until } battle times; content/tokens.js startCountdown, cleared by
@@ -177,9 +177,10 @@ export class Unit {
       artsDealtMul: m('artsDealtMul'),
       dmgTakenMul: m('dmgTakenMul'),
       physTakenMul: m('physTakenMul'),
+      artsAttackAddition: a('artsAttackAddition'),
       artsTakenMul: m('artsTakenMul'),
       trueTakenMul: m('trueTakenMul'),
-      elemTakenMul: m('elemTakenMul'),           // 元素损伤倍率: element gauge fills (damage.js applyElement)
+      elemTakenMul: m('elemTakenMul'),           // 元素损伤倍率: element gauge fills (attack/element.js applyElement)
       elementalTakenMul: m('elementalTakenMul'), // 元素脆弱: 元素伤害 (the 'elemental' HP damage type)
       healingDealtMul: m('healingDealtMul'),
       healingTakenMul: m('healingTakenMul'),
@@ -187,6 +188,7 @@ export class Unit {
       spRecovery: Math.max(0, fin((b.spRecovery + a('spRecoveryFlat')) * m('spRecoveryMul'), 0)),
       spCostFlat: a('spCostFlat'),
       redeployMul: m('redeployMul'),
+      costMul: m('costMul'),
       hpRegen: fin(b.hpRecoveryPerSec + a('hpRegen') + a('hpRegenRatio') * maxHp, 0),
       shield,
       flags: flags || EMPTY,
@@ -240,9 +242,12 @@ export class Unit {
   isEnemy() { return this.side === 'enemy'; }
   isAlly() { return this.side === 'ally'; }
 
+  /** Entity class, independent of team: enemy-record allies such as 炎佑 retain enemy element rules. */
+  get isEnemyEntity() { return this.kind === 'enemy' || String(this.defId).startsWith('enemy_'); }
+
   /** Element gauge capacity: 1000, leaders (enemy rank BOSS) 2000 (official "·我方" burst terms). */
   get gaugeMax() {
-    return this.side === 'enemy' && (this.isBoss || (this.def && this.def.rank === 'BOSS')) ? ELEMENT_GAUGE_MAX_LEADER : ELEMENT_GAUGE_MAX;
+    return this.isEnemyEntity && (this.isBoss || (this.def && this.def.rank === 'BOSS')) ? ELEMENT_GAUGE_MAX_LEADER : ELEMENT_GAUGE_MAX;
   }
 
   /** Element gauge helper */

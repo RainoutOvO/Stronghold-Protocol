@@ -150,10 +150,7 @@ async function coopMatch(P, base, { bots = 1, prefix }) {
   const guest = new Client(P, base, 'guest', { prefix: `${prefix}-phone`, w: 756, h: 366 });
   await host.open();
   await host.enter('凯尔希');
-  await host.click('.mode-card', '同盟模拟');
-  await host.click('.diff-card', '标准模拟');
-  await host.click('.create-box button', '创建同盟');
-  const room = (await host.waitFor((s) => !!s.room?.code, 'room created')).room;
+  const room = await host.createCoop();
   for (let i = 0; i < bots; i++) {
     await host.click('button', '添加 AI 队友');
     await sleep(600);
@@ -245,10 +242,7 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
     try {
       await host.open();
       await host.enter('凯尔希');
-      await host.click('.mode-card', '同盟模拟');
-      await host.click('.diff-card', '标准模拟');
-      await host.click('.create-box button', '创建同盟');
-      const room = (await host.waitFor((s) => !!s.room?.code, 'room created')).room;
+      const room = await host.createCoop();
       await guest.open(`?room=${room.code}`);
       await guest.enter('阿米娅');
       await guest.waitFor((s) => s.room?.code === room.code, 'guest joined');

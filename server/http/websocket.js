@@ -47,23 +47,34 @@ export function narrowDeflateOffer(header) {
   });
 }
 
+/** A per-network cap, as printed on boot ('unlimited' for 0). */
+function perNetwork(n) { return n > 0 ? n : 'unlimited'; }
+
 /**
  * The session stack of one server.
  * @param {{ MatchClass?: Function, seedFn?: () => number, [option: string]: any }} opts startServer() options
  * @param {{ data: object, log: object, content?: { cs: string } | null,
  *   plugins?: ReturnType<typeof import('../plugins/roomSets.js').createRoomSets> | null,
- *   hosts?: ReturnType<typeof import('../match/host/index.js').createMatchHosts> | null }} deps the game data the lobby's
+ *   hosts?: ReturnType<typeof import('../match/host/index.js').createMatchHosts> | null,
+ *   versions?: ReturnType<typeof import('../versions.js').createVersionSets> | null,
+ *   versionHosts?: ReturnType<typeof import('../match/host/index.js').createMatchHosts> | null }} deps the game data the lobby's
  *   matches use, the logger, the vanilla content (server/plugins/identity.js: welcome / room.state content, BattleSpec
  *   cs), the room sets a room's host chooses from (room.setPlugins: visual and content sets), the match hosts a room with
- *   gameplay plugins plays in (DESIGN §32.6)
+ *   gameplay plugins plays in (DESIGN §32.6), the official versions and their match hosts (DESIGN §35.23)
  * @returns {{ registry: SessionRegistry, lobby: Lobby, network: Network }}
  */
-export function createSessionStack(opts, { data, log, content = null, plugins = null, hosts = null }) {
-  const netOptions = netOptionsFrom(opts);
+export function createSessionStack(opts, { data, log, content = null, plugins = null, hosts = null, versions = null, versionHosts = null }) {
+  const netOptions = netOptionsFrom(opts, log);
   const registry = new SessionRegistry({ reconnectWindowMs: netOptions.reconnectWindowMs ?? NET_DEFAULTS.reconnectWindowMs });
-  const lobbyOptions = lobbyOptionsFrom(opts);
-  const lobby = new Lobby({ registry, log, MatchClass: opts.MatchClass, getData: () => data, seedFn: opts.seedFn, content, plugins, hosts, options: lobbyOptions });
+  const lobbyOptions = lobbyOptionsFrom(opts, log);
+  const lobby = new Lobby({ registry, log, MatchClass: opts.MatchClass, getData: () => data, seedFn: opts.seedFn, content, plugins, hosts, versions, versionHosts, options: lobbyOptions });
   const network = new Network({ registry, handler: lobby, log, options: netOptions });
+  // The caps in effect, printed once when the stack is built, so the deploy log states the configuration the server is
+  // actually running with. A global cap of 0 is printed as 0 (it rejects every room / socket); a per-network 0 is
+  // printed as "unlimited". `log` is the quiet-aware logger, so a test server stays silent.
+  log.info(`[http] limits: rooms ${lobby.opts.maxRooms} (${perNetwork(lobby.opts.maxRoomsPerAddr)}/network), `
+    + `matches ${perNetwork(lobby.opts.maxMatchesPerAddr)}/network, `
+    + `sockets ${network.opts.maxConnections} (${perNetwork(network.opts.maxConnectionsPerAddr)}/network)`);
   return { registry, lobby, network };
 }
 

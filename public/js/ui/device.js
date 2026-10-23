@@ -108,6 +108,30 @@ export function featureClasses(f) {
 /** prefers-reduced-motion: reduce */
 export function reducedMotion(win = globalThis) { return mq(win, '(prefers-reduced-motion: reduce)'); }
 
+/** The short-screen block of the stylesheets (css/screens/lobby.css: landscape phones), for text CSS cannot swap. */
+export const SHORT_SCREEN_QUERY = '(max-height: 520px)';
+
+/**
+ * Whether a media query matches, kept current through its change events (a rotation, a resized window); false where
+ * matchMedia is missing. The lobby passes SHORT_SCREEN_QUERY's answer to 选择同盟方式 (its key field's placeholder).
+ * @param {string} query
+ * @param {any} [win]
+ */
+export function useMediaQuery(query, win = globalThis) {
+  const [on, setOn] = useState(() => mq(win, query));
+  useEffect(() => {
+    let m = null;
+    try { m = win.matchMedia?.(query); } catch { m = null; }
+    if (!m) return undefined;
+    const sync = () => setOn(!!m.matches);
+    sync();
+    if (typeof m.addEventListener === 'function') { m.addEventListener('change', sync); return () => m.removeEventListener('change', sync); }
+    if (typeof m.addListener === 'function') { m.addListener(sync); return () => m.removeListener(sync); } // Safari < 14
+    return undefined;
+  }, [query]);
+  return on;
+}
+
 /**
  * Keep a class on <html> while a component is mounted and `on` holds (replaces CSS :has(), which Firefox ESR 115 and
  * Safari < 15.4 lack): the match screen sets sp-in-match, the connection banner sp-conn.

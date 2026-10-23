@@ -292,7 +292,7 @@ import { FakeBattle } from './match/fakeBattle.js';
 import { TEST_COMMANDS, TEST_RATE_COUNT, guardTestMessage } from '../shared/testMode.js';
 import { readFileSync } from 'node:fs';
 import { matchClock, newestFirst, explainTestDetail, formatAuditLine, testRefusalText } from '../public/js/ui/testAudit.js';
-import { DOCK_REM, clampDock, dockHome, dockMetricsFromStyle, dockObstacles, readDockPos, rectAreaOverlap, writeDockPos } from '../public/js/ui/testDock.js';
+import { DOCK_REM, clampDock, dockHome, dockMetricsFromStyle, dockObstacles, readDockPos, rectAreaOverlap, remOf, writeDockPos } from '../public/js/ui/testDock.js';
 
 function fixture(t, opts = {}) {
   const h = makeMatch({ mode: 'solo', test: true, ...opts });
@@ -515,6 +515,12 @@ test('the open test dock defaults to the field and stays inside the viewport', (
   }
   assert.equal(dockHome({ width: 720, height: 1280 }).sheet, true);
   assert.equal(dockHome({ width: 360, height: 640 }).sheet, true);
+  // 界面大小 75 % (DESIGN §35.43): the measured root (50 px at 1280×720) places the dock, not the unscaled clamp (66.7)
+  assert.ok(Math.abs(remOf(1280, 720) * 0.75 - 50) < 1e-9, 'remOf is the unscaled clamp');
+  const full = dockHome({ width: 1280, height: 720 }, metrics), small = dockHome({ width: 1280, height: 720, rem: 50 }, metrics);
+  assert.equal(small.rem, 50);
+  assert.ok(Math.abs(small.x - full.x * 0.75) < 1e-9, `${small.x} vs ${full.x}`);
+  assert.equal(dockObstacles({ width: 1280, height: 720, rem: 50 }, metrics).topBar.h, metrics.topBar * 50);
   const clamped = clampDock({ x: -40, y: 9000 }, { width: 1280, height: 720 }, { width: 240, height: 248 });
   assert.equal(clamped.x, 0);
   assert.equal(clamped.y, 720 - 248);

@@ -1,7 +1,10 @@
 // §35.9: a readable index over human-visible data, not a second intent executor.
 import { FIELD, legalTiles, parseKey } from './board.js';
-import { interestDigest } from '../ai/knowledge.js';
+import { interestDigest, effectText } from '../ai/knowledge.js';
+import { operatorCaps } from '../ai/playbook.js';
 import { ruleOption } from '../../shared/plugins/rules.js';
+import { pieceBonds } from './bondsMeta.js';
+import { advisorBanks } from './aiEconomy.js';
 
 export function aiDigest(m, ps, kind, pub, own, pack = null) {
   const gd = ps.gd || m.gd;
@@ -12,8 +15,37 @@ export function aiDigest(m, ps, kind, pub, own, pack = null) {
     const nameZh = raw?.name || r?.nameZh || id;
     return { name: r && r.nameZh === nameZh ? r.name : nameZh, nameZh };
   };
-  const piece = p => ({ ...p, ...named(p.id), items: (p.items || []).map(i => ({ ...i, ...named(i.id) })) });
-  const slots = list => (list || []).map((s, slot) => s && ({ ...s, slot, ...named(s.id), tier: gd.tierOf(s.id) }));
+  const chessView = id => {
+    const rec = gd.chess(id);
+    if (!rec) return {};
+    // name is already applied by named(). class is the official profession. caps match the playbook hints.
+    return { class: rec.profession || '', caps: operatorCaps(rec) };
+  };
+  const operator = p => p.kind === 'chess' ? { baseId: gd.baseIdOf(p.id), bonds: pieceBonds(gd, p, m.rules),
+    stars: gd.isGolden(p.id) ? 2 : 1, ...chessView(p.id) } : {};
+  // [ASSUMED] Kill chance is the seat strategy's bountyKillChance (legacy exposure model) when that hook returns
+  // a finite number. Compact enemy stats are the catalogue row, not the round's scaled combat values.
+  const enemyBrief = key => {
+    const e = gd.enemy(key);
+    if (!e) return undefined;
+    const effect = effectText([e.desc, ...(e.abilities || [])]).replace(/<@[^>]*>|<\/>/g, '').slice(0, 160);
+    return { hp: e.stats?.maxHp || 0, def: e.stats?.def || 0, res: e.stats?.res || 0, motion: e.stats?.motion || '',
+      fly: typeof e.isFlyEnemy === 'boolean' ? e.isFlyEnemy : e.stats?.motion === 'FLY', ...(effect ? { effect } : {}) };
+  };
+  const withBounty = card => {
+    if (!card || card.kind !== 'bounty') return card;
+    let killChance;
+    if (typeof m.bot?.bountyKillChance === 'function') {
+      try {
+        const p = m.bot.bountyKillChance(m, ps, card);
+        if (typeof p === 'number' && Number.isFinite(p)) killChance = p;
+      } catch { /* a broken estimator must not drop the observation */ }
+    }
+    const enemy = card.enemyKey ? enemyBrief(card.enemyKey) : undefined;
+    return { ...card, ...(killChance === undefined ? {} : { killChance }), ...(enemy ? { enemy } : {}) };
+  };
+  const piece = p => ({ ...p, ...named(p.id), ...operator(p), items: (p.items || []).map(i => ({ ...i, ...named(i.id) })) });
+  const slots = list => (list || []).map((s, slot) => s && ({ ...s, slot, ...named(s.id), ...operator(s), tier: gd.tierOf(s.id) }));
   const actions = [];
   const add = (intent, text) => actions.push({ id: `a${actions.length + 1}`, text, intent });
   if (kind === 'band' && pub.draft?.turn === ps.playerId) {
@@ -71,11 +103,18 @@ export function aiDigest(m, ps, kind, pub, own, pack = null) {
     if (own.canReady) add({ t: 'g.ready', ready: true }, 'ready');
   }
   return {
-    playerId: own.playerId, round: pub.round, phase: pub.phase, band: { id: own.bandId, ...named(own.bandId) },
+    playerId: own.playerId, round: pub.round, phase: pub.phase, lp: own.lp, band: { id: own.bandId, ...named(own.bandId) },
+    availability: { disabledBonds: pub.disabledBonds, bannedChess: pub.bannedChess, diyBanned: own.diyBanned },
+    factions: pub.factions,
+    ...(m.externalAI?.config.mode === 'plan' ? { feedback: m.externalAI.feedbackFor(ps) } : {}),
     economy: { gold: own.funds, interest: interestDigest(gd, own.bandId, own.funds), level: own.shop.level,
-      exp: null, upgradePrice: own.shop.upgradePrice, refreshPrice: own.shop.refreshPrice },
+      exp: null, upgradePrice: own.shop.upgradePrice, refreshPrice: own.shop.refreshPrice,
+      expiringFunds: gd.leftoverKeptBands.includes(own.bandId) ? 0 : own.funds,
+      frozenSlots: own.shop.slots.flatMap((s, slot) => s?.frozen && !s.sold ? [slot] : []),
+      bankOperators: advisorBanks(m, ps).map(p => ({ uid: p.uid, id: p.id, sellValue: gd.sellPrice(p.id) })) },
     bonds: own.bonds.map(b => ({ ...b, ...named(b.bondId), nextThreshold: b.thresholds?.find(n => n > b.count) ?? null })),
-    shop: slots(own.shop.slots), rewards: slots(own.shop.rewardOffer?.slots), personalChoice: own.personalChoice,
+    shop: slots(own.shop.slots), rewards: slots(own.shop.rewardOffer?.slots),
+    personalChoice: own.personalChoice ? { ...own.personalChoice, cards: (own.personalChoice.cards || []).map(withBounty) } : own.personalChoice,
     bench: own.hand.map((p, slot) => p && ({ ...piece(p), slot })).filter(Boolean),
     overflow: own.temp.filter(Boolean).map(piece), board: own.board.map(piece),
     deployCap: own.deployCap, upcoming: own.nextEnemies.map(e => ({ ...e, ...named(e.enemyKey) })), boss: { id: pub.bossId, ...named(pub.bossId), round: pub.bossRound },
@@ -83,7 +122,7 @@ export function aiDigest(m, ps, kind, pub, own, pack = null) {
     opponents: pub.players.filter(p => p.playerId !== own.playerId && p.alive).map(p => ({ playerId: p.playerId,
       lp: p.lp, bandId: p.bandId, bonds: p.bonds, board: m._prepBoardUnits(m.players.get(p.playerId)).map(u =>
         ({ id: u.defId, name: u.name, tier: u.tier, row: u.y, col: u.x, dir: u.dir, items: u.items })) })),
-    choices: { cards: pub.sp?.cards, offers: pub.offers },
+    choices: { cards: pub.sp?.cards?.map(withBounty), offers: pub.offers },
     geometry: { rows: [FIELD.r0, FIELD.r1], cols: [0, FIELD.c1], tiles: [...ps.deployMap()].map(([key, terrain]) => ({ at: parseKey(key), terrain })) },
     actions,
     actionScope: 'Current-state shortcuts; IDs last only for this observation. Raw intents also support swaps, Arts, consumables, band focus and offer refresh; all actions are revalidated.',

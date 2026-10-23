@@ -65,8 +65,9 @@ const NOT_SCALED = [
   /\.dhp\b/,
   // the 机变 card: its grid fits 7 lines of the effect text (game-panels.css), so a bigger font would clamp text away
   /\.spcard/,
-  // decorative wordmarks and boot/rotate overlays whose size is the composition
-  /\.title-cn/, /\.title-en/, /\.title-bg__target/, /\.brief-boss__q/, /\.boot__/, /\.rotate-hint/,
+  // decorative wordmarks and boot/rotate overlays whose size is the composition (the top bar's deco type: the text
+  // stand-in of the official hudPanel/frame_deco_txt* sprites, at their size)
+  /\.title-cn/, /\.title-en/, /\.title-bg__target/, /\.brief-boss__q/, /\.boot__/, /\.rotate-hint/, /\.gtop__deco/,
   // the join code's letter-spaced field, the px-floored 本局信息 dialog, the 16 px diagnostics box (iOS zoom guard)
   /\.field--code/, /\.minfo-dlg/, /\.set-diag__text/,
   // the keyboard hints of the 快捷键 list (a shared rule with the HUD's .toolbtn kbd)
@@ -177,6 +178,7 @@ describe('文字大小: the CSS text root', () => {
   const theme = sheets.find((s) => s.rel === `${CSS}/theme.css`).src;
 
   test('theme.css defines --t for 小 and every step, and nothing else defines it', () => {
+    // 小 = the design's own sizes; the 64 / 76 / 88 px floors never shrink with 界面大小 (DESIGN §35.43, ui-size.test.js)
     assert.match(theme, /:root \{ --t: 1rem; \}/, '小 = the design\'s own sizes');
     for (const [attr, value] of [['md', /--t: max\(1rem, 64px\)/], ['lg', /--t: max\(calc\(1rem \* 1\.15\), 76px\)/], ['xl', /--t: max\(calc\(1rem \* 1\.3\), 88px\)/]]) {
       assert.match(theme, new RegExp(`:root\\[data-text="${attr}"\\] \\{ ${value.source}; \\}`), `the ${attr} step`);
@@ -187,10 +189,10 @@ describe('文字大小: the CSS text root', () => {
     }
   });
 
-  test('the layout root 1rem is untouched — the five rem→px readers must not move', () => {
-    assert.match(theme, /html \{\n {2}font-size: clamp\(40px, min\(calc\(100vw \/ 19\.2\), calc\(100vh \/ 10\.8\)\), 240px\);/,
+  test('the layout root 1rem is untouched by 文字大小 — the five rem→px readers must not move (only 界面大小 scales it)', () => {
+    assert.match(theme, /html \{\n {2}font-size: calc\(clamp\(40px, min\(calc\(100vw \/ 19\.2\), calc\(100vh \/ 10\.8\)\), 240px\) \* var\(--sp-ui, 1\)\);/,
       'the desktop clamp');
-    assert.match(theme, /font-size: clamp\(40px, min\(calc\(100vw \/ 19\.2\), calc\(100svh \/ 10\.8\)\), 240px\);/,
+    assert.match(theme, /font-size: calc\(clamp\(40px, min\(calc\(100vw \/ 19\.2\), calc\(100svh \/ 10\.8\)\), 240px\) \* var\(--sp-ui, 1\)\);/,
       'the svh clamp (mobile toolbars)');
     assert.doesNotMatch(theme, /font-size: clamp\([^)]*var\(--t\)/, 'the root scale never reads the text root');
     // and the modules that convert it keep their own floor: a text step must not reach them
@@ -214,7 +216,7 @@ describe('文字大小: the CSS text root', () => {
       ['screens/game.css', /\.set-row__label \{[^}]*font-size: calc\(\.18 \* var\(--t\)\)/s],
       ['screens/game-panels.css', /\.dtext \{ font-size: calc\(\.15 \* var\(--t\)\); line-height: 1\.65;/],
       ['screens/guide.css', /\.guide__tips li \{ font-size: calc\(\.18 \* var\(--t\)\)/],
-      ['screens/lobby.css', /\.mode-card__desc/, ],
+      ['screens/lobby.css', /\.pcard__desc \{[^}]*font-size: calc\(\.16 \* var\(--t\)\)/],
     ];
     for (const [file, re] of samples) assert.match(byRel.get(`${CSS}/${file}`), re, file);
   });

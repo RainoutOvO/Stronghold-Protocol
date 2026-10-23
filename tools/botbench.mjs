@@ -6,6 +6,7 @@
 //   node tools/botbench.mjs [--configs solo:FUNNY,solo:HARD,coop4:FUNNY,coop4:HARD] [--seeds N] [--seed S]
 //                           [--rehearsal N] [--bot ID] [--json out.json] [--quiet]
 //   node tools/botbench.mjs --compare old.json new.json      A/B tables (markdown) of two --json runs
+//   --version   official version id (default: act2autochess); workers and JSON records carry it
 //   --configs   comma list of <solo|coopN>:<FUNNY|NORMAL|HARD|ABYSS> (coopN = N bot seats, 1–4)
 //   --seeds N   matches per config (seeds S..S+N−1, default 10)
 //   --rehearsal layouts each bot rehearses per prep (default: the Match default)
@@ -29,6 +30,8 @@
 // the SP_DRAFT callback in which a bot's pick landed. Wall-clock numbers depend on the host load: compare runs made
 // back to back with --jobs 1.
 
+import { toolVersion } from './versions/runtime.mjs';
+import { DEFAULT_VERSION } from '../shared/versions.js';
 import { performance } from 'node:perf_hooks';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
@@ -85,7 +88,8 @@ async function runOne(cfg, seed) {
   });
   // Test-only band forcing overrides the selected picker, preserving real band metadata for custom strategies.
   if (opt.band && cfg.mode === 'solo') m.bot = defineBotStrategy({ id: m.bot.id, base: m.bot, pickBand: () => String(opt.band) });
-  const rec = { config: cfg.name, botStrategy: m.bot.id, seed, stageId: m.stageId, bossId: m.bossId, preps: [], picks: [], rounds: [], bounties: [] };
+  const rec = { config: cfg.name, botStrategy: m.bot.id, seed, stageId: m.stageId, bossId: m.bossId, preps: [], economy: [], picks: [], rounds: [], bounties: [] };
+  if (toolVersion !== DEFAULT_VERSION) rec.version = toolVersion;
   // rehearsal stepping time (Battle.step of the rehearsal fields)
   let rehMs = 0;
   const newBattle = m.newBattle.bind(m);
@@ -140,7 +144,13 @@ async function runOne(cfg, seed) {
   const lost = {};
   for (const ps of m.players.values()) {
     const endPrep = ps.endPrep.bind(ps);
-    ps.endPrep = () => { (lost[m.round] ||= {})[ps.playerId] = m.gd.leftoverKeptBands.includes(ps.bandId) ? 0 : ps.funds; return endPrep(); };
+    ps.endPrep = () => {
+      const expired = m.gd.leftoverKeptBands.includes(ps.bandId) ? 0 : ps.funds;
+      (lost[m.round] ||= {})[ps.playerId] = expired;
+      rec.economy.push({ round: m.round, pid: ps.playerId, bandId: ps.bandId, level: ps.shop.level,
+        lost: expired, refreshes: ps.round.refreshes });
+      return endPrep();
+    };
   }
   let last = '';
   const t0 = performance.now();
@@ -231,7 +241,8 @@ function stats(records) {
   const heur = preps.map((p) => p.ms - p.rehMs);
   const rounds = records.flatMap((r) => r.rounds.flatMap((row) => Object.values(row.players).filter((p) => p.alive || p.leaks != null).map((p) => ({ ...p, round: row.round }))));
   const at = (rd, f) => avg(rounds.filter((p) => p.round === rd && p.alive).map(f));
-  const lostPerPrep = rounds.filter((p) => p.lost != null).map((p) => p.lost);
+  const economy = records.flatMap(r => r.economy || []);
+  const lostPerPrep = economy.length ? economy.map(p => p.lost) : rounds.filter((p) => p.lost != null).map((p) => p.lost);
   const merges = records.flatMap((r) => r.players.map((p) => p.merges));
   const bountyLeaks = records.reduce((s, r) => s + r.rounds.reduce((t, row) => t + Object.values(row.players).reduce((u, p) => u + (p.bountyLeaks || 0), 0), 0), 0);
   const leaksAll = records.reduce((s, r) => s + r.rounds.reduce((t, row) => t + Object.values(row.players).reduce((u, p) => u + (p.leaks || 0), 0), 0), 0);
@@ -244,6 +255,7 @@ function stats(records) {
     reachedBoss: records.filter((r) => r.roundsPassed >= r.bossRound - 1).length,
     hidden: records.filter((r) => r.hidden).length,
     lost: avg(lostPerPrep),
+    refreshes: economy.length ? avg(economy.map(p => p.refreshes)) : null,
     merges: avg(merges),
     leaks: leaksAll / Math.max(1, records.length),
     bounties: records.reduce((s, r) => s + r.bounties.length, 0),
@@ -276,12 +288,12 @@ function compare(runs, names) {
   const f1 = (x) => x.toFixed(1);
   const f2 = (x) => x.toFixed(2);
   const four = (a, f = f1) => a.map(f).join(' / ');
-  console.log('\n| config | run | matches | wins | rounds passed | LP left | reached boss | leaks/match | bounties (leaked) | funds lost/prep | merges/bot | errors |');
-  console.log('|---|---|---|---|---|---|---|---|---|---|---|---|');
+  console.log('\n| config | run | matches | wins | rounds passed | LP left | reached boss | leaks/match | bounties (leaked) | funds lost/prep | refreshes/prep | merges/bot | errors |');
+  console.log('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const c of cfgs) runs.forEach((rs, i) => {
     const s = stats(rs.filter((r) => r.config === c));
     if (!s.n) return;
-    console.log(`| ${c} | ${names[i]} | ${s.n} | ${s.wins} (${Math.round((100 * s.wins) / s.n)} %) | ${f2(s.rounds)} | ${f1(s.lpLeft)} | ${s.reachedBoss} | ${f1(s.leaks)} | ${s.bounties} (${s.bountyLeaks}) | ${f2(s.lost)} | ${f2(s.merges)} | ${s.errors} |`);
+    console.log(`| ${c} | ${names[i]} | ${s.n} | ${s.wins} (${Math.round((100 * s.wins) / s.n)} %) | ${f2(s.rounds)} | ${f1(s.lpLeft)} | ${s.reachedBoss} | ${f1(s.leaks)} | ${s.bounties} (${s.bountyLeaks}) | ${f2(s.lost)} | ${s.refreshes == null ? 'n/a' : f2(s.refreshes)} | ${f2(s.merges)} | ${s.errors} |`);
   });
   console.log('\n| config | run | shop level R4/7/10/13 | board value R4/7/10/13 | Σ bond tiers | activated layers | elites deployed |');
   console.log('|---|---|---|---|---|---|---|');

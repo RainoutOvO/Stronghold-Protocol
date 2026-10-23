@@ -146,6 +146,10 @@ export function buildResult(m, outcome) {
     modeId: m.modeId,
     difficulty: m.difficulty,
     stageId: m.stageId,
+    // a non-default official version's match (DESIGN §35.23): its registry id — the page records and draws the settlement
+    // with that version even when it never saw the room (the lobby's replay after a kick / grace timeout); absent for
+    // the default, so its result stays byte-identical
+    ...(m.version ? { version: m.version } : {}),
     bossId: m.bossId,
     hiddenBossId: m.hiddenBossId,
     seed: m.seed,

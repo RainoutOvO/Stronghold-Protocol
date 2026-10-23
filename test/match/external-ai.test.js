@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AI_ACTIONS, aiObservation, validAIReply } from '../../server/match/externalAI.js';
+import { buildResult } from '../../server/match/results.js';
 import { replayTestMatch, decodeTestTrace } from '../../server/match/testReplay.js';
 import { makeMatch, DATA, giveItem, checkInvariants } from './harness.js';
 import { FakeBattle } from './fakeBattle.js';
@@ -53,6 +54,29 @@ test('observation keys exactly match the seat wire views; no private opponents, 
   assert.ok(!JSON.stringify(o).includes('123456789'));
   for (const key of ['seed', 'rng', 'rngBots', 'rngMeta', 'rngDraft', 'pool']) assert.ok(!Object.hasOwn(o, key));
   o.private.hand.push({ uid: -100 }); assert.notDeepEqual(o.private.hand, ps.privateView().hand);
+});
+
+test('another official version\'s match names it in the observation context (gameVersion, DESIGN §35.23); the default never', t => {
+  const h = makeMatch({ humans: 1, bots: 1, fake: true, version: 'act2autochess' });
+  t.after(() => h.m.dispose());
+  h.start().toPrep();
+  assert.equal(h.m.version, null, 'act2autochess is the default: no version');
+  const ps = h.m.order[1];
+  assert.equal(Object.hasOwn(aiObservation(h.m, ps, { id: 'a', kind: 'prep', deadline: 1, remaining: 64 }, []).context, 'gameVersion'), false);
+  h.m.version = 'act1autochess';
+  assert.equal(aiObservation(h.m, ps, { id: 'b', kind: 'prep', deadline: 1, remaining: 64 }, []).context.gameVersion, 'act1autochess');
+});
+
+test('another official version\'s m.public / m.result name it (`version`, DESIGN §35.23: a replayed result on a fresh page); the default\'s frames never', t => {
+  const h = makeMatch({ humans: 1, bots: 1, fake: true });
+  t.after(() => h.m.dispose());
+  h.start().toPrep();
+  const outcome = { victory: false, hiddenReached: false, hiddenCleared: false, reason: 'test' };
+  assert.equal(Object.hasOwn(h.m.publicView(), 'version'), false, 'the default\'s m.public is unchanged');
+  assert.equal(Object.hasOwn(buildResult(h.m, outcome), 'version'), false, 'the default\'s m.result is unchanged');
+  h.m.version = 'act1autochess@V1_1';
+  assert.equal(h.m.publicView().version, 'act1autochess@V1_1');
+  assert.equal(buildResult(h.m, outcome).version, 'act1autochess@V1_1');
 });
 
 test('external intents share human schema, semantic errors, mutation and authorization boundaries', t => {
